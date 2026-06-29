@@ -1,0 +1,45 @@
+# Base config — defaults shared by all runs. One run config == one fully
+# specified experiment cell; run/*.yaml inherit this via `_base_` and override.
+
+data:
+  path: data/raw/3dshapes.h5
+  n_total: 480000
+  subset: null            # null => use the full encoder_train split; else first N
+
+split:
+  split_seed: 1234        # FIXED across the study (not the per-run seed)
+  sizes:                  # disjoint; sum must be <= n_total (here == 480000)
+    encoder_train: 400000 # SSL, unlabeled
+    probe_train: 40000    # FIXED across the capacity ladder (prereg §0 discipline)
+    probe_val: 10000
+    probe_test: 30000
+
+backbone:
+  name: resnet18cifar     # 3x3 stride-1 stem, no maxpool -> 512-d h
+
+projector:
+  hidden_dim: 512
+  out_dim: 128
+
+simclr:
+  temperature: 0.5        # NT-Xent tau (pilot sweeps {0.1, 0.2, 0.5})
+
+augmentation:
+  condition: standard     # Phase 1 reference encoder; per-factor conditions = Phase 3
+  strength: strong
+
+run:
+  seed: 0                 # controls model init + dataloader shuffling
+  device: null            # null => auto (cuda > mps > cpu)
+  amp: true               # only takes effect on CUDA
+  deterministic: true
+  resume: true            # resume from last_ckpt.pt if present
+  num_workers: 4
+  batch_size: 512
+  epochs: 100
+  warmup_epochs: 10
+  lr: 0.001
+  weight_decay: 1.0e-6
+
+output:
+  dir: results/encoders

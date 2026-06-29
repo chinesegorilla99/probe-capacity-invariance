@@ -1,0 +1,15 @@
+# Reference encoder — CUDA run. Deterministic (cudnn) + AMP, large batch for many
+# NT-Xent negatives. Train >=2 seeds (--set run.seed=N) and clear the
+# encoder-quality gate. Use subset: null for the full 400k encoder_train.
+_base_: ../base.yaml
+
+data:
+  subset: 150000
+
+run:
+  device: cuda
+  amp: true
+  batch_size: 512
+  epochs: 100
+  warmup_epochs: 10
+  seed: 0

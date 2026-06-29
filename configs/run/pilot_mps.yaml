@@ -1,0 +1,15 @@
+# Pilot — MPS smoke test. Small subset, few epochs: verify loss decreases, no
+# NaN, diagnostics healthy, seed->seed reproducibility (within MPS tolerance).
+# NOT a quality-gate run.
+_base_: ../base.yaml
+
+data:
+  subset: 20000
+
+run:
+  device: mps
+  amp: false
+  batch_size: 256
+  epochs: 20
+  warmup_epochs: 2
+  seed: 0

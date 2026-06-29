@@ -1,0 +1,16 @@
+# Supervised-reference encoder — recoverability CEILING (diagnostic-only, prereg
+# §5; in no decision rule). Trains backbone + factor heads end-to-end; only the
+# frozen backbone h is probed afterward. Device auto-selects (cuda > mps > cpu).
+_base_: ../base.yaml
+
+data:
+  subset: 150000
+
+run:
+  device: null
+  amp: true
+  batch_size: 256
+  epochs: 15
+  lr: 0.001
+  weight_decay: 1.0e-4
+  seed: 0

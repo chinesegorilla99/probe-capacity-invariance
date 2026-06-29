@@ -1,0 +1,58 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Data (large / externally sourced — keep dirs via .gitkeep, ignore contents) ---
+data/raw/*
+data/synthetic/*
+!data/raw/.gitkeep
+!data/raw/README.md
+!data/synthetic/.gitkeep
+!data/synthetic/README.md
+*.h5
+*.hdf5
+*.npz
+*.npy
+
+# --- Model checkpoints / encoders ---
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+checkpoints/
+
+# --- Results / run outputs (keep dir via .gitkeep, ignore contents) ---
+results/*
+!results/.gitkeep
+!results/README.md
+*.log
+wandb/
+runs/
+mlruns/
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# --- Obsidian lab notebook (local working notes — kept out of the repo by choice) ---
+lab-notebook/
+.obsidian/
