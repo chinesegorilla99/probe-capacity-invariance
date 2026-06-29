@@ -100,13 +100,12 @@ def load_arrays(
 
 
 class Shapes3D(Dataset):
-    """Lazy Shapes3D split.
+    """In-memory Shapes3D split.
 
-    Images are read from the HDF5 one row at a time (the file is only ~255 MB and
-    is page-cached by the OS after the first pass), so the in-RAM footprint stays
-    flat regardless of split size. Labels are small and kept in memory. Indices
-    are sorted so the position->image mapping matches an in-memory gather; with a
-    fixed seed the DataLoader shuffle then yields the same per-step sequence.
+    The split is read once into RAM (a sorted hyperslab read from the HDF5), so
+    per-item access is a plain array index — random reads never touch disk. Read
+    the file from local storage, not a network/FUSE mount: a per-item lazy read
+    over such a mount is ~150 ms each and starves the GPU.
 
     Args:
         indices: which rows of the HDF5 this split covers (see ``data.splits``).
@@ -128,30 +127,13 @@ class Shapes3D(Dataset):
         self._Image = Image
         self.transform = transform
         self.return_label = return_label
-        self.path = str(path)
-        self.indices = np.sort(np.asarray(indices))
-        self._h5 = None  # opened lazily, per worker (h5py handles aren't fork-safe)
-        self.labels = None
-        if return_label:
-            import h5py
-
-            with h5py.File(self.path, "r") as f:
-                self.labels = f["labels"][self.indices].astype(np.float32)
-
-    def _images(self):
-        """Open the HDF5 lazily in whichever process first reads it, so the
-        file handle is never inherited across a fork."""
-        if self._h5 is None:
-            import h5py
-
-            self._h5 = h5py.File(self.path, "r")
-        return self._h5["images"]
+        self.images, self.labels = load_arrays(path, indices)
 
     def __len__(self) -> int:
-        return len(self.indices)
+        return len(self.images)
 
     def __getitem__(self, i: int):
-        img = self._Image.fromarray(self._images()[self.indices[i]])  # HWC uint8 -> PIL
+        img = self._Image.fromarray(self.images[i])  # HWC uint8 -> PIL
         out = self.transform(img) if self.transform is not None else img
         if self.return_label:
             return out, self.labels[i]
