@@ -7,7 +7,9 @@ from .shapes3d import (
     Factor,
     Shapes3D,
     download_shapes3d,
+    ensure_image_memmap,
     load_arrays,
+    memmap_path,
 )
 from .splits import make_splits
 
@@ -18,6 +20,8 @@ __all__ = [
     "N_TOTAL",
     "Shapes3D",
     "download_shapes3d",
+    "ensure_image_memmap",
     "load_arrays",
+    "memmap_path",
     "make_splits",
 ]
