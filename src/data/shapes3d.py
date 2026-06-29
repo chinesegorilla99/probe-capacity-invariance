@@ -165,9 +165,6 @@ class Shapes3D(Dataset):
         path: str | Path = DEFAULT_PATH,
         return_label: bool = True,
     ):
-        from PIL import Image  # local import
-
-        self._Image = Image
         self.transform = transform
         self.return_label = return_label
         self.indices = np.sort(np.asarray(indices))
@@ -183,8 +180,11 @@ class Shapes3D(Dataset):
         return len(self.indices)
 
     def __getitem__(self, i: int):
+        from PIL import Image  # cached in sys.modules; kept off self so the
+
+        # dataset stays picklable for Windows/spawn DataLoader workers.
         row = self.indices[i]
-        img = self._Image.fromarray(np.asarray(self.images[row]))  # uint8 -> PIL
+        img = Image.fromarray(np.asarray(self.images[row]))  # uint8 -> PIL
         out = self.transform(img) if self.transform is not None else img
         if self.return_label:
             return out, self.labels[i]
