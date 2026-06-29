@@ -168,7 +168,11 @@ class Shapes3D(Dataset):
         self.transform = transform
         self.return_label = return_label
         self.indices = np.sort(np.asarray(indices))
-        self.images = np.load(ensure_image_memmap(path), mmap_mode="r")
+        # Locate/build the cache now (cheap if present), but open the memmap
+        # lazily per process: a numpy memmap pickles by value, so opening it here
+        # would ship the full ~5.9 GB array to every spawn (Windows) worker.
+        self._mm_path = ensure_image_memmap(path)
+        self._images = None
         self.labels = None
         if return_label:
             import h5py
@@ -179,12 +183,19 @@ class Shapes3D(Dataset):
     def __len__(self) -> int:
         return len(self.indices)
 
+    def _image_array(self) -> np.ndarray:
+        # Open the memmap on first use, per process. Kept out of pickled state so
+        # spawn workers receive only the path (not the array); the OS page-caches
+        # and shares the file across processes.
+        if self._images is None:
+            self._images = np.load(self._mm_path, mmap_mode="r")
+        return self._images
+
     def __getitem__(self, i: int):
         from PIL import Image  # cached in sys.modules; kept off self so the
-
         # dataset stays picklable for Windows/spawn DataLoader workers.
         row = self.indices[i]
-        img = Image.fromarray(np.asarray(self.images[row]))  # uint8 -> PIL
+        img = Image.fromarray(np.asarray(self._image_array()[row]))  # uint8 -> PIL
         out = self.transform(img) if self.transform is not None else img
         if self.return_label:
             return out, self.labels[i]
