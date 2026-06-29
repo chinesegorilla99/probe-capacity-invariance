@@ -164,6 +164,7 @@ class Shapes3D(Dataset):
         transform=None,
         path: str | Path = DEFAULT_PATH,
         return_label: bool = True,
+        in_memory: bool = False,
     ):
         self.transform = transform
         self.return_label = return_label
@@ -173,6 +174,14 @@ class Shapes3D(Dataset):
         # would ship the full ~5.9 GB array to every spawn (Windows) worker.
         self._mm_path = ensure_image_memmap(path)
         self._images = None
+        self._ram = None
+        if in_memory:
+            # Hold the split in RAM via one sequential read of the cache (cheap
+            # on an HDD, unlike per-step random reads). Use num_workers=0 on spawn
+            # (Windows) — this array would otherwise be pickled to each worker.
+            full = np.asarray(np.load(self._mm_path, mmap_mode="r"))
+            self._ram = np.ascontiguousarray(full[self.indices])
+            del full
         self.labels = None
         if return_label:
             import h5py
@@ -194,8 +203,8 @@ class Shapes3D(Dataset):
     def __getitem__(self, i: int):
         from PIL import Image  # cached in sys.modules; kept off self so the
         # dataset stays picklable for Windows/spawn DataLoader workers.
-        row = self.indices[i]
-        img = Image.fromarray(np.asarray(self._image_array()[row]))  # uint8 -> PIL
+        arr = self._ram[i] if self._ram is not None else self._image_array()[self.indices[i]]
+        img = Image.fromarray(np.asarray(arr))  # uint8 -> PIL
         out = self.transform(img) if self.transform is not None else img
         if self.return_label:
             return out, self.labels[i]

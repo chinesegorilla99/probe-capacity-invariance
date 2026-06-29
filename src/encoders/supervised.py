@@ -67,7 +67,10 @@ def train_supervised(cfg: dict) -> Path:
         train_idx = train_idx[: int(cfg["data"]["subset"])]
 
     ds = Shapes3D(
-        train_idx, transform=eval_transform(), path=cfg["data"].get("path", DEFAULT_PATH)
+        train_idx,
+        transform=eval_transform(),
+        path=cfg["data"].get("path", DEFAULT_PATH),
+        in_memory=cfg["data"].get("in_memory", False),
     )
     # Standardize continuous targets on this split (stored for reproducibility).
     cont = ds.labels[:, CONT_IDX]

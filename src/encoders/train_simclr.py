@@ -75,6 +75,7 @@ def train_simclr(cfg: dict) -> Path:
         transform=TwoViewTransform(aug),
         path=cfg["data"].get("path", DEFAULT_PATH),
         return_label=False,
+        in_memory=cfg["data"].get("in_memory", False),
     )
     num_workers = run.get("num_workers", 4)
     loader = DataLoader(

@@ -138,7 +138,8 @@ def run_gate(args) -> dict:
           f"(train={len(splits['probe_train'])}, val={len(splits['probe_val'])}, "
           f"test={len(splits['probe_test'])})")
     datasets = {
-        name: Shapes3D(splits[name], transform=eval_transform(), path=path, return_label=True)
+        name: Shapes3D(splits[name], transform=eval_transform(), path=path, return_label=True,
+                       in_memory=cfg["data"].get("in_memory", False))
         for name in ("probe_train", "probe_val", "probe_test")
     }
 

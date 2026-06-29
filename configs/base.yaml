@@ -5,6 +5,7 @@ data:
   path: data/raw/3dshapes.h5
   n_total: 480000
   subset: null            # null => use the full encoder_train split; else first N
+  in_memory: false        # true => hold the split in RAM (HDD hosts; needs num_workers=0)
 
 split:
   split_seed: 1234        # FIXED across the study (not the per-run seed)
