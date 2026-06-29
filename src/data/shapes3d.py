@@ -100,7 +100,13 @@ def load_arrays(
 
 
 class Shapes3D(Dataset):
-    """In-memory Shapes3D split.
+    """Lazy Shapes3D split.
+
+    Images are read from the HDF5 one row at a time (the file is only ~255 MB and
+    is page-cached by the OS after the first pass), so the in-RAM footprint stays
+    flat regardless of split size. Labels are small and kept in memory. Indices
+    are sorted so the position->image mapping matches an in-memory gather; with a
+    fixed seed the DataLoader shuffle then yields the same per-step sequence.
 
     Args:
         indices: which rows of the HDF5 this split covers (see ``data.splits``).
@@ -122,13 +128,30 @@ class Shapes3D(Dataset):
         self._Image = Image
         self.transform = transform
         self.return_label = return_label
-        self.images, self.labels = load_arrays(path, indices)
+        self.path = str(path)
+        self.indices = np.sort(np.asarray(indices))
+        self._h5 = None  # opened lazily, per worker (h5py handles aren't fork-safe)
+        self.labels = None
+        if return_label:
+            import h5py
+
+            with h5py.File(self.path, "r") as f:
+                self.labels = f["labels"][self.indices].astype(np.float32)
+
+    def _images(self):
+        """Open the HDF5 lazily in whichever process first reads it, so the
+        file handle is never inherited across a fork."""
+        if self._h5 is None:
+            import h5py
+
+            self._h5 = h5py.File(self.path, "r")
+        return self._h5["images"]
 
     def __len__(self) -> int:
-        return len(self.images)
+        return len(self.indices)
 
     def __getitem__(self, i: int):
-        img = self._Image.fromarray(self.images[i])  # HWC uint8 -> PIL
+        img = self._Image.fromarray(self._images()[self.indices[i]])  # HWC uint8 -> PIL
         out = self.transform(img) if self.transform is not None else img
         if self.return_label:
             return out, self.labels[i]
