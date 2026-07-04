@@ -1,0 +1,20 @@
+# Phase-2 probe instrument — capacity ladder + G/S/epsilon_G metric layer.
+# Shares the FIXED study split (probe_train held constant across the ladder,
+# prereg §0). One config = the probe-side of the study; encoder cells are Phase 3.
+_base_: ../base.yaml
+
+# The ladder rungs + reg grid are code-locked in src/probes/ladder.py (D016);
+# this block documents them and sets the val-run knobs.
+probe:
+  ladder: [linear, mlp_small, mlp_large, mlp_deep]   # widths in ladder.LADDER
+  weight_decay_grid: [0.0, 1.0e-4, 1.0e-3, 1.0e-2]   # per-rung reg, tuned on val
+  epochs: 100
+  batch_size: 4096
+  lr: 1.0e-3
+  bootstrap: 2000            # paired-seed bootstrap resamples for G/S/epsilon_G CIs
+  epsilon_alpha: 0.05        # two-sided band on the random-vs-random null
+
+validation:
+  subsample: 8000            # cap probe_train for the control-validation run only
+  epochs: 60
+  random_seeds: [0, 1, 2]    # >=2 needed for the data-derived epsilon_G null
