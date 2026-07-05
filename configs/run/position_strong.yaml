@@ -1,0 +1,22 @@
+# Position arm (dSprites) — translation, STRONG. Targets x/y position
+# (expected-artifact). ~50-epoch cut (verify on the first encoder's quality gate
+# before scaling). Train >=10 seeds via --set run.seed=N.
+_base_: ../base.yaml
+
+data:
+  dataset: dsprites
+  path: data/raw/dsprites.npz
+  n_total: 737280
+  subset: 150000
+
+augmentation:
+  condition: position
+  strength: strong
+
+run:
+  device: cuda
+  amp: true
+  batch_size: 512
+  epochs: 50
+  warmup_epochs: 5
+  seed: 0

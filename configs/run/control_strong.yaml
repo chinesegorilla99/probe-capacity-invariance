@@ -1,0 +1,20 @@
+# Control-aug baseline (Shapes3D) — minimal augmentation, targets no factor. The
+# within-dataset reference for the Color arm. STRONG = the lighter control crop
+# (see augmentations.py). Train >=10 seeds via --set run.seed=N.
+_base_: ../base.yaml
+
+data:
+  dataset: shapes3d
+  subset: 150000
+
+augmentation:
+  condition: control
+  strength: strong
+
+run:
+  device: cuda
+  amp: true
+  batch_size: 512
+  epochs: 50
+  warmup_epochs: 5
+  seed: 0

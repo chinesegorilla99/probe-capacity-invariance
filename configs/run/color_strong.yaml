@@ -1,0 +1,20 @@
+# Color arm (Shapes3D) — hue/colour jitter, STRONG. Targets object/floor/wall hue
+# (expected-genuine). ~50-epoch cut (verify on the first encoder's quality gate
+# before scaling to all seeds). Train >=10 seeds via --set run.seed=N.
+_base_: ../base.yaml
+
+data:
+  dataset: shapes3d
+  subset: 150000
+
+augmentation:
+  condition: color
+  strength: strong
+
+run:
+  device: cuda
+  amp: true
+  batch_size: 512
+  epochs: 50
+  warmup_epochs: 5
+  seed: 0

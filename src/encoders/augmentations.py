@@ -4,11 +4,12 @@
 (PIL -> CHW float tensor in [0,1]). ``TwoViewTransform`` wraps it into the SimCLR
 positive-pair generator.
 
-Phase 1 trains only the ``standard`` SimCLR stack (a strong, canonical mix) for
-the reference encoder, plus a ``control`` (minimal) stack. The per-factor
-conditions (color / position / orientation / scale) are dispatched here so the
-Phase-3 sweep reuses this function unchanged — they currently raise
-NotImplementedError to keep Phase 1 scope honest.
+Phase 1 trains the ``standard`` SimCLR stack (a strong, canonical mix) for the
+reference encoder, plus a ``control`` (minimal) stack. The per-factor conditions
+(color / position / orientation / scale) are the Phase-3 invariance treatments:
+each varies ONLY its targeted factor across the two views and leaves the image
+otherwise intact, so the induced invariance is clean and interpretable (no
+confounding geometry/colour). Each is offered at ``weak`` and ``strong`` strength.
 """
 
 from __future__ import annotations
@@ -73,8 +74,51 @@ def build_augmentation(
             ]
         )
 
-    # color / position / orientation / scale — wired for Phase 3, not Phase 1.
-    raise NotImplementedError(
-        f"condition {condition!r} is a Phase-3 per-factor treatment; "
-        "Phase 1 trains only 'standard' (+ 'control')."
-    )
+    weak = strength == "weak"
+
+    if condition == "color":
+        # Target: object/floor/wall hue (Shapes3D). Colour-jitter only, no
+        # geometry — the two views differ solely in colour, inducing hue
+        # invariance. Grayscale added at strong strength (canonical SimCLR).
+        if weak:
+            jitter = T.ColorJitter(0.2, 0.2, 0.2, 0.1)
+            return T.Compose([T.RandomApply([jitter], p=0.8), T.ToTensor()])
+        jitter = T.ColorJitter(0.8, 0.8, 0.8, 0.5)
+        return T.Compose(
+            [
+                T.RandomApply([jitter], p=0.8),
+                T.RandomGrayscale(p=0.2),
+                T.ToTensor(),
+            ]
+        )
+
+    if condition == "position":
+        # Target: x/y position (dSprites). Translate only — scale/rotation fixed
+        # — so the views differ solely in object location. ``fill=0`` matches the
+        # black dSprites background (also fine for the Shapes3D extension).
+        frac = 0.10 if weak else 0.25
+        return T.Compose(
+            [
+                T.RandomAffine(degrees=0, translate=(frac, frac), fill=0),
+                T.ToTensor(),
+            ]
+        )
+
+    if condition == "orientation":
+        # Target: orientation. Rotate only. Strong spans the full circle to match
+        # dSprites' full-rotation orientation factor; weak is a limited arc.
+        degrees = 15 if weak else 180
+        return T.Compose([T.RandomRotation(degrees, fill=0), T.ToTensor()])
+
+    if condition == "scale":
+        # Target: scale. Isotropic zoom only (no translation/rotation), so the
+        # views differ solely in object size.
+        scale_range = (0.9, 1.1) if weak else (0.6, 1.4)
+        return T.Compose(
+            [
+                T.RandomAffine(degrees=0, scale=scale_range, fill=0),
+                T.ToTensor(),
+            ]
+        )
+
+    raise ValueError(f"unhandled condition {condition!r}")  # unreachable

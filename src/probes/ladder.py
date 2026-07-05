@@ -1,6 +1,8 @@
 """Probe-capacity ladder (prereg §0) — the Phase-2 instrument's rungs.
 
-Four rungs of monotone capacity, applied to the frozen 512-d encoder feature h:
+Four rungs of monotone capacity, applied to a frozen representation. The input
+dimension is inferred from the features (512-d for the backbone ``h``; the
+projector space for the H4 axis), so the same ladder probes either unchanged.
 
     1. linear      Linear(512 -> out)
     2. mlp_small    512 -> 64  -> out
@@ -29,7 +31,7 @@ from sklearn.metrics import accuracy_score, r2_score
 
 from seeds import seed_everything
 
-IN_DIM = 512  # backbone h
+IN_DIM = 512  # backbone h (default; the projector axis infers its own in_dim)
 
 # Locked ladder (D016). hidden = () is the linear rung.
 @dataclass(frozen=True)
@@ -67,9 +69,9 @@ class MLPProbe(nn.Module):
         return self.net(x)
 
 
-def param_count(rung: Rung, out_dim: int) -> int:
+def param_count(rung: Rung, out_dim: int, in_dim: int = IN_DIM) -> int:
     """Trainable parameters — the reported capacity measure for this rung."""
-    n, d = 0, IN_DIM
+    n, d = 0, in_dim
     for h in rung.hidden:
         n += d * h + h
         d = h
@@ -84,11 +86,11 @@ def _standardize(Xtr, *others):
 
 
 def _train_one(
-    rung, Xtr, ytr, Xva, yva, Xte, yte, kind, out_dim, wd, seed, device, epochs, batch, lr
+    rung, Xtr, ytr, Xva, yva, Xte, yte, kind, out_dim, in_dim, wd, seed, device, epochs, batch, lr
 ):
     """Train one probe at a fixed weight decay; return (val_metric, test_metric)."""
     seed_everything(seed)
-    probe = MLPProbe(IN_DIM, rung.hidden, out_dim).to(device)
+    probe = MLPProbe(in_dim, rung.hidden, out_dim).to(device)
     opt = torch.optim.Adam(probe.parameters(), lr=lr, weight_decay=wd)
     loss_fn = nn.CrossEntropyLoss() if kind == "categorical" else nn.MSELoss()
 
@@ -146,11 +148,12 @@ def fit_rung(
     out_dim = round(1.0 / chance) if kind == "categorical" else 1  # n_classes = 1/chance
     Xtr, Xva, Xte = _standardize(np.asarray(Xtr, np.float32),
                                  np.asarray(Xva, np.float32), np.asarray(Xte, np.float32))
+    in_dim = Xtr.shape[1]
 
     best = {"val": -np.inf}
     for wd in wd_grid:
         val_m, test_m = _train_one(
-            rung, Xtr, ytr, Xva, yva, Xte, yte, kind, out_dim, wd, seed, device, epochs, batch, lr
+            rung, Xtr, ytr, Xva, yva, Xte, yte, kind, out_dim, in_dim, wd, seed, device, epochs, batch, lr
         )
         if val_m > best["val"]:
             best = {"val": val_m, "test": test_m, "wd": wd}
@@ -166,7 +169,7 @@ def fit_rung(
         "recoverability": float(recov),
         "raw_test": float(best["test"]),
         "best_wd": float(best["wd"]),
-        "params": param_count(rung, out_dim),
+        "params": param_count(rung, out_dim, in_dim),
         "metric": metric,
     }
 

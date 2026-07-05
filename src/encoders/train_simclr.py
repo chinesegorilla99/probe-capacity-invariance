@@ -25,7 +25,7 @@ from tqdm import tqdm
 
 from seeds import seed_everything, worker_init_fn
 
-from ..data.shapes3d import DEFAULT_PATH, N_TOTAL, Shapes3D
+from ..data.registry import get_dataset
 from ..data.splits import make_splits
 from ..utils.config import apply_overrides, load_config
 from ..utils.device import device_supports_amp, pick_device
@@ -61,7 +61,8 @@ def train_simclr(cfg: dict) -> Path:
     use_amp = device_supports_amp(device) and run.get("amp", True)
 
     # --- data: encoder_train split, two-view SSL (no labels) ---
-    n_total = cfg["data"].get("n_total", N_TOTAL)
+    spec = get_dataset(cfg["data"].get("dataset", "shapes3d"))
+    n_total = cfg["data"].get("n_total", spec.n_total)
     splits = make_splits(n_total, cfg["split"]["sizes"], cfg["split"]["split_seed"])
     train_idx = splits["encoder_train"]
     if cfg["data"].get("subset"):
@@ -70,10 +71,10 @@ def train_simclr(cfg: dict) -> Path:
     aug = build_augmentation(
         cfg["augmentation"]["condition"], cfg["augmentation"]["strength"]
     )
-    ds = Shapes3D(
+    ds = spec.cls(
         train_idx,
         transform=TwoViewTransform(aug),
-        path=cfg["data"].get("path", DEFAULT_PATH),
+        path=cfg["data"].get("path", spec.default_path),
         return_label=False,
         in_memory=cfg["data"].get("in_memory", False),
     )

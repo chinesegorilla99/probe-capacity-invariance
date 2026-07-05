@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..data.shapes3d import FACTORS
+from ..data.shapes3d import FACTORS  # default factor set (Shapes3D)
 from .ladder import LADDER, fit_ladder
 
 RUNG_NAMES = tuple(r.name for r in LADDER)
@@ -41,11 +41,12 @@ def permute_labels(Y: np.ndarray, seed: int) -> np.ndarray:
     return out
 
 
-def ladder_recoverability(feats: dict, *, seed: int, device="cpu", permute=False, **kw):
+def ladder_recoverability(feats: dict, *, seed: int, factors=FACTORS, device="cpu", permute=False, **kw):
     """Fit the ladder for every factor on one encoder's features.
 
     ``feats`` maps split name -> (H, Y) with splits probe_train / probe_val / probe_test.
-    Returns recov[F, R] normalized recoverability; params[F, R]; metrics[F] ("r2"|"norm_acc").
+    ``factors`` is the dataset's factor tuple (defaults to Shapes3D). Returns
+    recov[F, R] normalized recoverability; params[F, R]; metrics[F] ("r2"|"norm_acc").
     """
     Htr, Ytr = feats["probe_train"]
     Hva, Yva = feats["probe_val"]
@@ -53,10 +54,10 @@ def ladder_recoverability(feats: dict, *, seed: int, device="cpu", permute=False
     if permute:  # random-label control task
         Ytr, Yva, Yte = permute_labels(Ytr, seed), permute_labels(Yva, seed), permute_labels(Yte, seed)
 
-    F, R = len(FACTORS), len(LADDER)
+    F, R = len(factors), len(LADDER)
     recov, params = np.zeros((F, R)), np.zeros((F, R), int)
     metrics = []
-    for fi, fac in enumerate(FACTORS):
+    for fi, fac in enumerate(factors):
         col = fac.index
         if fac.kind == "categorical":
             ytr, yva, yte = (np.rint(Y[:, col]).astype(int) for Y in (Ytr, Yva, Yte))
@@ -70,10 +71,10 @@ def ladder_recoverability(feats: dict, *, seed: int, device="cpu", permute=False
     return recov, params, metrics
 
 
-def stack_runs(runs: list[tuple[dict, int]], *, device="cpu", permute=False, **kw) -> np.ndarray:
+def stack_runs(runs: list[tuple[dict, int]], *, factors=FACTORS, device="cpu", permute=False, **kw) -> np.ndarray:
     """Recoverability stack [n_seeds, F, R] over (features, seed) runs of one encoder role."""
     return np.stack([
-        ladder_recoverability(feats, seed=seed, device=device, permute=permute, **kw)[0]
+        ladder_recoverability(feats, seed=seed, factors=factors, device=device, permute=permute, **kw)[0]
         for feats, seed in runs
     ])
 
@@ -132,22 +133,23 @@ def classify(g: float, s: float, eps: float) -> str:
     return "genuine" if s > 0 else "dead_zone"
 
 
-def flip_count(inv_bool: np.ndarray) -> dict:
+def flip_count(inv_bool: np.ndarray, factors=FACTORS) -> dict:
     """Invariance boolean G<=eps flipping between the linear rung (0) and top (-1)."""
     flipped = inv_bool[:, 0] != inv_bool[:, -1]
-    factors = [FACTORS[i].name for i in np.where(flipped)[0]]
-    return {"n_flips": int(flipped.sum()), "flipped_factors": factors}
+    names = [factors[i].name for i in np.where(flipped)[0]]
+    return {"n_flips": int(flipped.sum()), "flipped_factors": names}
 
 
 EPS_FIXED = 0.05  # sensitivity-only fixed threshold (prereg §4, FIX 2/5)
 
 
-def build_report(trained_stack, random_stack, real_stack, perm_stack, *, eps_boot=2000):
+def build_report(trained_stack, random_stack, real_stack, perm_stack, *, factors=FACTORS, eps_boot=2000):
     """Assemble the per-(factor, rung) G / S / epsilon_G table + case grid + flip counts.
 
     ``real_stack`` / ``perm_stack`` are trained-encoder recoverability with true / permuted
-    labels (for S). Uses the data-derived epsilon_G when >=2 random seeds, else the fixed
-    0.05 sensitivity threshold. Returns a JSON-friendly dict.
+    labels (for S). ``factors`` is the dataset's factor tuple (defaults to Shapes3D). Uses
+    the data-derived epsilon_G when >=2 random seeds, else the fixed 0.05 sensitivity
+    threshold. Returns a JSON-friendly dict.
     """
     G = paired_gain(trained_stack, random_stack, n_boot=eps_boot)
     S = selectivity(real_stack, perm_stack, n_boot=eps_boot)
@@ -160,7 +162,7 @@ def build_report(trained_stack, random_stack, real_stack, perm_stack, *, eps_boo
     inv_fixed = G["mean"] <= EPS_FIXED
 
     table = {}
-    for fi, fac in enumerate(FACTORS):
+    for fi, fac in enumerate(factors):
         table[fac.name] = [
             {
                 "rung": RUNG_NAMES[ri],
@@ -179,6 +181,6 @@ def build_report(trained_stack, random_stack, real_stack, perm_stack, *, eps_boo
         "n_seeds": {"trained": int(trained_stack.shape[0]), "random": int(random_stack.shape[0])},
         "rungs": list(RUNG_NAMES),
         "table": table,
-        "flips_primary": flip_count(inv_primary),
-        "flips_fixed_0.05": flip_count(inv_fixed),
+        "flips_primary": flip_count(inv_primary, factors),
+        "flips_fixed_0.05": flip_count(inv_fixed, factors),
     }
