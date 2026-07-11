@@ -112,6 +112,16 @@ def train_simclr(cfg: dict) -> Path:
         (lambda: torch.autocast(device_type="cuda")) if use_amp else nullcontext
     )
 
+    # Compile the forward path for speed (kernel fusion only — same architecture,
+    # loss, and hyperparameters, so the training regime is unchanged). Compile a
+    # separate handle and keep ``model`` eager for diagnostics/checkpointing so
+    # saved state_dicts stay prefix-clean. Default on for CUDA, off elsewhere.
+    compile_cfg = run.get("compile")
+    if compile_cfg is None:
+        compile_cfg = device.type == "cuda"
+    use_compile = bool(compile_cfg) and hasattr(torch, "compile")
+    fwd = torch.compile(model) if use_compile else model
+
     out_dir = Path(cfg["output"]["dir"]) / run_id_from_cfg(cfg)
     out_dir.mkdir(parents=True, exist_ok=True)
     ckpt_path = out_dir / "last_ckpt.pt"
@@ -136,8 +146,9 @@ def train_simclr(cfg: dict) -> Path:
     logger = JsonlLogger(out_dir / "train_log.jsonl")
     print(
         f"[simclr] run={run_id_from_cfg(cfg)} device={device} amp={use_amp} "
-        f"n={len(ds)} bs={run['batch_size']} steps/ep={steps_per_epoch} "
-        f"epochs={run['epochs']} tau={temperature} start_epoch={start_epoch}"
+        f"compile={use_compile} n={len(ds)} bs={run['batch_size']} "
+        f"steps/ep={steps_per_epoch} epochs={run['epochs']} tau={temperature} "
+        f"start_epoch={start_epoch}"
     )
 
     last_diag: dict = {}
@@ -151,7 +162,7 @@ def train_simclr(cfg: dict) -> Path:
             v2 = v2.to(device, non_blocking=True)
             opt.zero_grad(set_to_none=True)
             with amp_ctx():
-                z1, z2 = model(v1), model(v2)
+                z1, z2 = fwd(v1), fwd(v2)
                 loss = nt_xent_loss(z1, z2, temperature)
             if not torch.isfinite(loss):
                 print(f"[simclr] NON-FINITE loss at epoch {epoch} — aborting")

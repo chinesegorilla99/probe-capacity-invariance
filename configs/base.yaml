@@ -34,6 +34,7 @@ run:
   device: null            # null => auto (cuda > mps > cpu)
   amp: true               # only takes effect on CUDA
   deterministic: true
+  compile: null           # null => torch.compile on CUDA only; true/false to force
   resume: true            # resume from last_ckpt.pt if present
   num_workers: 4
   batch_size: 512
