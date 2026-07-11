@@ -41,7 +41,17 @@ pip install -e .
 
 Dependencies (declared, not pinned, in [pyproject.toml](pyproject.toml)): torch, torchvision, numpy, scipy, scikit-learn, pandas, matplotlib, pyyaml, tqdm.
 
-On Windows, activate the venv with `.venv\Scripts\activate` instead of `source .venv/bin/activate`. Install the CUDA build of PyTorch per the [official selector](https://pytorch.org/get-started/locally/) before `pip install -e .` if you want GPU training.
+On Windows, create the venv with `py -3.12 -m venv .venv` and activate it with `.venv\Scripts\activate` instead of `source .venv/bin/activate`. For GPU training, install the CUDA build of PyTorch **before** `pip install -e .` (the default wheel is CPU-only), e.g.:
+
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+```
+
+Pick the `cuXXX` tag that matches your driver from the [official selector](https://pytorch.org/get-started/locally/). Verify the GPU is visible before training:
+
+```bash
+python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
 
 ## Running the experiments
 
@@ -54,13 +64,32 @@ python -m src.data.shapes3d --download --build-cache
 python -m src.data.dsprites --download --build-cache
 ```
 
-**2. Train an encoder.** One experiment cell is `(condition, strength, seed)`; the seed controls both init and data order. Train ≥10 seeds per cell:
+**2. Train an encoder.** One experiment cell is `(condition, strength, seed)`; the seed controls both init and data order. A single seed:
 
 ```bash
 python -m src.encoders.train_simclr --config configs/run/color_strong.yaml --set run.seed=0
 ```
 
-Outputs land in `results/encoders/<condition>_<strength>_seed<seed>/`, and a re-launched run resumes from the last-epoch checkpoint. Run configs live in `configs/run/` (`color_strong`, `control_strong`, `position_strong`, plus the `supervised` and reference baselines).
+A quick 1-epoch sanity run on a tiny subset (verify the config and device before committing a full cell):
+
+```bash
+python -m src.encoders.train_simclr --config configs/run/control_strong.yaml --set run.seed=0 run.epochs=1 data.subset=2000
+```
+
+Train ≥10 seeds per cell. All 10 seeds of a cell, sequentially:
+
+```bash
+# macOS/Linux / Git Bash
+for s in 0 1 2 3 4 5 6 7 8 9; do \
+  python -m src.encoders.train_simclr --config configs/run/control_strong.yaml --set run.seed=$s; done
+```
+
+```powershell
+# Windows PowerShell
+foreach ($s in 0..9) { python -m src.encoders.train_simclr --config configs/run/control_strong.yaml --set run.seed=$s }
+```
+
+Swap the config for `position_strong.yaml` (dSprites) or `color_strong.yaml` (Shapes3D). Outputs land in `results/encoders/<condition>_<strength>_seed<seed>/`, and a re-launched run resumes from the last-epoch checkpoint, so finished seeds skip instantly. Run configs live in `configs/run/` (`color_strong`, `control_strong`, `position_strong`, plus the `supervised` and reference baselines).
 
 **3. Probe the trained encoders** into the analysis stacks:
 
