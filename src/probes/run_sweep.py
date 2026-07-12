@@ -22,7 +22,7 @@ single encoder's features regardless of seed count.
     python -m src.probes.run_sweep --config configs/probe/ladder.yaml \
         --dataset shapes3d --condition color --strength strong \
         --encoders results/encoders/color_strong_seed*/backbone.pt \
-        --random-seed 0 1 2 3 4 5 6 7 8 9 \
+        --random-seed 0 1 2 3 4 5 6 7 8 9 10 11 \
         --epochs 100 --num-workers 2 --out-root results/probes
 """
 
@@ -206,8 +206,8 @@ def _main() -> None:
     ap.add_argument("--condition", required=True)
     ap.add_argument("--strength", required=True)
     ap.add_argument("--encoders", nargs="+", required=True, help="trained backbone.pt (>=10)")
-    ap.add_argument("--random-seed", type=int, nargs="+",
-                    default=list(range(10)), help=">=10 for a powered epsilon_G")
+    ap.add_argument("--random-seed", type=int, nargs="+", default=list(range(12)),
+                    help="match the trained seed values (seed-paired epsilon_G); >=10 minimum")
     ap.add_argument("--data-path", default=None, help="override dataset path")
     ap.add_argument("--device", default=None)
     ap.add_argument("--batch-size", type=int, default=512)
