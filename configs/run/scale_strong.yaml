@@ -1,0 +1,20 @@
+# Scale arm (Shapes3D) — isotropic zoom only, STRONG (0.6–1.4×). Targets the
+# scale factor. ~50-epoch cut (verify on the first encoder's quality gate
+# before scaling to all seeds). Train 12 seeds via --set run.seed=N.
+_base_: ../base.yaml
+
+data:
+  dataset: shapes3d
+  subset: 150000
+
+augmentation:
+  condition: scale
+  strength: strong
+
+run:
+  device: cuda
+  amp: true
+  batch_size: 512
+  epochs: 50
+  warmup_epochs: 5
+  seed: 0

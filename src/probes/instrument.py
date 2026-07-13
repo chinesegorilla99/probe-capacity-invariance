@@ -140,6 +140,37 @@ def flip_count(inv_bool: np.ndarray, factors=FACTORS) -> dict:
     return {"n_flips": int(flipped.sum()), "flipped_factors": names}
 
 
+def flip_bootstrap(g_perseed: np.ndarray, eps, n_boot=2000, seed=0, factors=FACTORS) -> dict:
+    """Seed-resampling uncertainty of the flip count at a FIXED eps threshold (A1 §c).
+
+    Resamples the paired per-seed G stack [S,F,R] with the same rng pattern as
+    _boot_mean_ci (shared draws with the G/S CIs), recomputes the mean-G
+    invariance boolean per draw, and counts linear-vs-top flips. Threshold (eps)
+    uncertainty is carried separately by the epsilon_G diagnostics. Returns the
+    summary plus the raw per-draw counts under "_draws" (for study-level sums).
+    """
+    rng = np.random.default_rng(seed)
+    s = g_perseed.shape[0]
+    eps = np.broadcast_to(np.asarray(eps, float), g_perseed.shape[1:])
+    draws = np.empty(n_boot, int)
+    flip_frac = np.zeros(g_perseed.shape[1])
+    for b in range(n_boot):
+        gm = g_perseed[rng.integers(0, s, s)].mean(0)
+        inv = gm <= eps
+        flipped = inv[:, 0] != inv[:, -1]
+        draws[b] = int(flipped.sum())
+        flip_frac += flipped
+    flip_frac /= n_boot
+    lo, hi = np.percentile(draws, [2.5, 97.5])
+    return {
+        "n_flips_mean": float(draws.mean()),
+        "n_flips_ci95": [float(lo), float(hi)],
+        "per_factor_flip_fraction": {factors[i].name: float(flip_frac[i])
+                                     for i in range(g_perseed.shape[1])},
+        "_draws": draws,
+    }
+
+
 EPS_FIXED = 0.05  # sensitivity-only fixed threshold (prereg §4, FIX 2/5)
 
 

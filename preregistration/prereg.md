@@ -80,4 +80,22 @@ Hewitt & Liang 2019 (control tasks); Pimentel et al. 2020 (info-theoretic probin
 ---
 
 ## Amendments
-_(none yet — append dated, signed changes here only)_
+
+### A1 — 2026-07-13 — Realized grid (strong cross-section); confirm-rule clarifications; added reporting
+
+**Unblinding status at the time of this amendment:** all 36 first-slice encoders were trained (color / control / position × strong × 12 seeds); probe recoverability stacks existed for the color/strong cell only (seeds 0–9, computed 2026-07-11 — superseded by the planned 12-seed re-probe); the H1–H4 statistics layer, flip counts, and figures had **not** been run on any real cell. Decision-procedure validation to date used hand-set synthetic fixtures only (`results/_synthetic/`, tagged `synthetic_world`).
+
+**(a) Scope — realized grid.** Compute limits curtail the §0 condition × strength grid to the **strong cross-section**: Color, Position, Orientation, Scale, and Control-aug at strong strength, ≥12 seeds per cell (5 cells, 60 encoders). The weak strength axis is deferred to a follow-up study. Consequences, accepted in advance:
+- **H4's confirm rule (encoder−projector gap widening with augmentation strength) is not evaluable at a single strength.** H4 is reported as its sign component only — paired `G(encoder) − G(projector)` at strong, Wilcoxon + Holm per §6 — with status **"partial" (descriptive)**. No confirmation or refutation of H4 is claimed.
+- Claims are scoped to the realized cells; no generalization across augmentation strengths.
+- All Holm families span the realized cells only; family membership is stated explicitly in the report.
+- H1, H2, H3, both controls, and the headline flip count are unaffected.
+- The §Scope secondary real-data sanity check remains deferred; if unrun at submission, it is omitted from the paper's claims rather than approximated.
+
+**(b) Clarifying pins (implementation readings pinned 2026-07-04, before any real verdict; text now matches the implementation).**
+- **H1:** the "> ε_G" threshold for the capacity gap `Δ_G` uses the same CI-of-mean estimator applied to the random-vs-random null **of the capacity gap itself** (the random stack's own top-minus-linear gap), not the top-rung level ε_G.
+- **H3:** confirm keys on the §4 point boolean `G ≤ ε_G` at every rung; the §6 parenthetical band ("CI within ±ε_G") is co-reported as a diagnostic, **not** a gate; the suppressed sub-case (`G < 0`) remains reported distinctly.
+
+**(c) Additional reporting (additive only; no decision rule changes).**
+- **Flip-count uncertainty:** seed-bootstrap resampling of the paired per-seed G stack at *fixed* ε thresholds — per-factor flip fractions and a 95% interval on the headline count — co-reported for both the primary per-factor ε_G and the fixed-0.05 sensitivity ε_G. Threshold (ε) uncertainty is carried separately by the ε_G diagnostics, not folded into this bootstrap.
+- **Absolute recoverability levels:** `R(trained)`, `R(random-encoder floor)`, and `R(projector)` (mean + bootstrap CI per factor × rung) are co-reported next to G in every per-cell report and figure table, so an "invariant (`G ≤ ε_G`)" verdict over a near-ceiling random floor is never read as "the factor is absent from the representation."

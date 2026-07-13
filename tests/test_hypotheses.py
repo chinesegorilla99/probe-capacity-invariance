@@ -224,6 +224,36 @@ class TestHypotheses(unittest.TestCase):
         self.assertEqual(rep["flips_primary"]["flipped_factors"], ["object_hue"])
         self.assertEqual(rep["flips_fixed_0.05"]["flipped_factors"], ["object_hue"])
 
+    def test_flip_uncertainty(self):
+        # A1 §c: seed-bootstrap at fixed eps. object_hue flips in essentially
+        # every draw; under the tight primary eps the null factors hug the band,
+        # so an occasional draw adds a boundary flip (the fragility this report
+        # exists to expose) — the far-from-boundary fixed-0.05 eps stays exact.
+        for key in ("primary", "fixed_0.05"):
+            fu = self.res["flip_uncertainty"][key]
+            self.assertGreater(fu["per_factor_flip_fraction"]["object_hue"], 0.9)
+            self.assertLess(fu["per_factor_flip_fraction"]["scale"], 0.1)
+            self.assertGreaterEqual(fu["n_flips_ci95"][0], 1.0)
+            self.assertLessEqual(fu["n_flips_ci95"][1], 2.0)
+            self.assertAlmostEqual(fu["n_flips_mean"], 1.0, delta=0.3)
+        self.assertEqual(self.res["flip_uncertainty"]["fixed_0.05"]["n_flips_ci95"],
+                         [1.0, 1.0])
+        self.assertEqual(set(self.res["_flip_draws"]), {"primary", "fixed_0.05"})
+
+    def test_levels_reported(self):
+        # A1 §c: absolute R levels co-reported; trained mean must match the stack
+        lv = self.res["levels"]
+        self.assertEqual(set(lv), {"trained", "random_floor", "projector"})
+        cell = load_cell(self.cell_dir)
+        np.testing.assert_allclose(lv["trained"]["scale"]["mean"],
+                                   cell.trained.mean(0)[3], rtol=1e-6)
+        np.testing.assert_allclose(lv["random_floor"]["scale"]["mean"],
+                                   cell.random_stats.mean(0)[3], rtol=1e-6)
+        for r in range(4):  # floor ~BASE=0.5, CI brackets the mean
+            row = lv["random_floor"]["floor_hue"]
+            self.assertLess(row["lo"][r], row["mean"][r])
+            self.assertGreater(row["hi"][r], row["mean"][r])
+
     # --- epsilon diagnostics (Q13 watch-item) --------------------------------
 
     def test_epsilon_watch_item(self):
@@ -263,6 +293,13 @@ class TestHypotheses(unittest.TestCase):
                    if t["factor"] == "object_hue" and t["cell"] == "color_strong")
         self.assertEqual(row["verdict"], "linear_invariance_artifact")
         self.assertFalse(study["headline_contrast"]["complete"])
+        # A1: descriptive H4 explicitly labeled; study-level flip uncertainty present
+        self.assertIn("DESCRIPTIVE", hs["H4"]["note"])
+        self.assertEqual(study["headline_flip_count"]["uncertainty"]["fixed_0.05"]
+                         ["n_flips_ci95"], [1.0, 1.0])
+        unc = study["headline_flip_count"]["uncertainty"]["primary"]
+        self.assertGreaterEqual(unc["n_flips_ci95"][0], 1.0)
+        self.assertLessEqual(unc["n_flips_ci95"][1], 2.0)
         json.dumps(study)  # JSON-native without a default converter
 
     def test_assemble_widening_two_strengths(self):

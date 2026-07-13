@@ -219,7 +219,13 @@ def validate_world(world: str, world_root: Path, n_boot: int = 500,
             fails.append(f"{name}: got {got!r}, expected {want!r}")
 
     hs = study["hypotheses"]
-    check("provisional", study["provisional"], False)
+    # The fixtures emit the first-slice cells; vs the A1 realized grid (5 strong
+    # cells) the assembled table must be provisional with EXACTLY the extension
+    # cells missing — validates the missing-cell bookkeeping, not full coverage.
+    from .hypotheses import EXPECTED_CELLS
+    emitted = {f"{cond}_{strg}" for cond, strg, *_ in GRID}
+    check("missing_expected_cells", study["missing_expected_cells"],
+          [c for c in EXPECTED_CELLS if c not in emitted])
     check("H1", hs["H1"]["status"], exp["H1"])
     check("H2", hs["H2"]["status"], exp["H2"])
     check("H3", hs["H3"]["status"], exp["H3"])

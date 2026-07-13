@@ -30,7 +30,7 @@ Frozen statistical rules (prereg §4/§6/§7):
     pooled or rank-compared (FIX 1): H2 pairs are within-type only.
   * Probe-TEST recoverability only (upstream of this layer, by construction).
 
-Interpretation pins (prereg text unchanged; logged in the decision log):
+Interpretation pins (adopted into prereg text by Amendment A1, 2026-07-13):
   * H1's "> epsilon_G" threshold for Delta_G uses the same CI-of-mean estimator
     applied to the random-vs-random null of the capacity gap itself
     (epsilon_g on the random stack's own top-minus-linear gap).
@@ -58,6 +58,7 @@ from .instrument import (
     _boot_mean_ci,
     build_report,
     epsilon_g,
+    flip_bootstrap,
     paired_gain,
     selectivity,
 )
@@ -75,8 +76,10 @@ TARGETED_FACTORS = {
     "control": (),
 }
 
-# First-slice grid (D022) — used only to mark the assembled table provisional.
-EXPECTED_CELLS = ("color_strong", "position_strong", "control_strong")
+# Realized grid (prereg Amendment A1: the strong cross-section) — used only to
+# mark the assembled table provisional while cells are missing.
+EXPECTED_CELLS = ("color_strong", "position_strong", "control_strong",
+                  "orientation_strong", "scale_strong")
 
 _INVARIANT_CASES = {"invariant", "suppressed"}
 
@@ -287,6 +290,28 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
     eps_diag = epsilon_diagnostics(cell.random_stats, eps_used, G["mean"],
                                    names, list(cell.rungs), n_boot=n_boot)
 
+    # Absolute recoverability levels (A1 §c): co-reported so "invariant" over a
+    # near-ceiling random floor is never read as "factor absent."
+    levels = {}
+    for lname, arr in (("trained", cell.trained), ("random_floor", cell.random_stats),
+                       ("projector", cell.projector)):
+        m, lo, hi = _boot_mean_ci(arr, n_boot=n_boot)
+        levels[lname] = {
+            fac.name: {"mean": [float(x) for x in m[fi]],
+                       "lo": [float(x) for x in lo[fi]],
+                       "hi": [float(x) for x in hi[fi]]}
+            for fi, fac in enumerate(cell.factors)
+        }
+
+    # Flip-count seed-bootstrap uncertainty (A1 §c) at fixed eps thresholds;
+    # raw draws kept under "_" for the study-level sum in assemble().
+    flip_unc, flip_draws = {}, {}
+    for key, eps_arr in (("primary", eps_used),
+                         ("fixed_0.05", np.full_like(eps_used, EPS_FIXED))):
+        fb = flip_bootstrap(g, eps_arr, n_boot=n_boot, factors=cell.factors)
+        flip_draws[key] = fb.pop("_draws")
+        flip_unc[key] = fb
+
     # H1 — capacity dependence: Delta_G CI > 0 and > its own random-vs-random
     # null band, with the S gate open at the top rung.
     dg_mean, dg_lo, dg_hi = _boot_mean_ci(dg, n_boot=n_boot)
@@ -409,6 +434,8 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
         "factors": [{"name": f.name, "kind": f.kind} for f in cell.factors],
         "rungs": list(cell.rungs),
         "report": report,
+        "levels": levels,
+        "flip_uncertainty": flip_unc,
         "epsilon_diagnostics": eps_diag,
         "h1": h1,
         "h2": h2,
@@ -416,6 +443,7 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
         "h4": h4,
         "_h4_d": d_h4,
         "_trained_seeds": list(cell.trained_seeds),
+        "_flip_draws": flip_draws,
     }
 
 
@@ -592,6 +620,10 @@ def assemble(results: list[dict], alpha: float = ALPHA) -> dict:
         "widening_component": widening,
         "status": h4_status,
     }
+    if h4_status == "partial":
+        h4["note"] = ("single-strength grid (Amendment A1): the sign component is "
+                      "DESCRIPTIVE only; the prereg §6 widening rule is not evaluable, "
+                      "so H4 is neither confirmed nor refuted")
 
     # Headline: verdict-stability flip count over (factor, condition) cells.
     def flips(key):
@@ -600,6 +632,22 @@ def assemble(results: list[dict], alpha: float = ALPHA) -> dict:
         return {"n_flips": len(rows), "flips": rows}
 
     headline = {"primary": flips("flips_primary"), "fixed_0.05": flips("flips_fixed_0.05")}
+
+    # Study-level flip uncertainty (A1 §c): cells resample independently, the
+    # per-draw counts sum across cells.
+    uncertainty = {}
+    for key in ("primary", "fixed_0.05"):
+        draws = [r.get("_flip_draws", {}).get(key) for r in results]
+        if draws and all(d is not None for d in draws):
+            total = np.sum(np.stack(draws), axis=0)
+            lo, hi = np.percentile(total, [2.5, 97.5])
+            uncertainty[key] = {
+                "n_flips_mean": float(total.mean()),
+                "n_flips_ci95": [float(lo), float(hi)],
+                "note": "seed bootstrap at fixed epsilon; threshold uncertainty is "
+                        "carried by the epsilon_G diagnostics",
+            }
+    headline["uncertainty"] = uncertainty
 
     # Genuine-vs-artifact verdict table per (condition, factor).
     table = []
@@ -685,6 +733,9 @@ def _main() -> None:
     hl = study["headline_flip_count"]
     print(f"[hyp]   flips: primary={hl['primary']['n_flips']} "
           f"fixed_0.05={hl['fixed_0.05']['n_flips']}")
+    for key, u in hl.get("uncertainty", {}).items():
+        print(f"[hyp]   flips[{key}] seed-bootstrap: mean={u['n_flips_mean']:.2f} "
+              f"ci95={u['n_flips_ci95']}")
     for note in study["notes"]:
         print(f"[hyp]   note: {note}")
 

@@ -1,10 +1,10 @@
 """Phase 3 encoder sweep — Modal edition of notebooks/kaggle_phase3_sweep.ipynb.
 
-Trains the 36-encoder grid (3 conditions x 12 seeds) on GPU workers, then probes
-the frozen encoders into the per-cell stacks.npz the statistics layer consumes.
-Persistent state (encoders, logs, probe outputs, dataset cache) lives on two
-Modal Volumes so it survives across runs the way /kaggle/working persisted
-across Kaggle sessions.
+Scoped to the position_strong cell only (12 seeds, dSprites) — color_strong and
+control_strong are being trained on Kaggle instead. Trains those 12 encoders on
+GPU workers, then probes them into stacks.npz. Persistent state (encoders, logs,
+probe outputs, dataset cache) lives on two Modal Volumes so it survives across
+runs the way /kaggle/working persisted across Kaggle sessions.
 
 One-time setup:
     pip install modal
@@ -31,7 +31,9 @@ each parallel worker gets its own container and its own GPU.
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import modal
@@ -44,6 +46,9 @@ image = (
     .apt_install("git")
     .run_commands(f"git clone {REPO_URL} {REPO_DIR}")
     .run_commands(f"cd {REPO_DIR} && pip install -e . && pip install h5py")
+    # the repo tracks empty results/ and data/raw/ placeholder dirs; Volumes
+    # refuse to mount onto a non-empty path, so clear them in the image.
+    .run_commands(f"rm -rf {REPO_DIR}/results {REPO_DIR}/data/raw")
 )
 
 app = modal.App("phase3-sweep", image=image)
@@ -58,8 +63,6 @@ VOLUMES = {
 
 SEEDS = list(range(12))
 CONFIGS = [
-    ("configs/run/color_strong.yaml", "color", "strong", "shapes3d", []),
-    ("configs/run/control_strong.yaml", "control", "strong", "shapes3d", []),
     ("configs/run/position_strong.yaml", "position", "strong", "dsprites",
      ["--data-path", "data/raw/dsprites.npz"]),
 ]
@@ -77,37 +80,70 @@ def verify_gpu():
 
 @app.function(cpu=2, memory=4096, volumes=VOLUMES, timeout=1800)
 def download_data():
-    subprocess.run(["python", "-m", "src.data.shapes3d", "--download", "--build-cache"],
-                    cwd=REPO_DIR, check=True)
+    # position_strong only needs dSprites — Shapes3D isn't trained on Modal here.
     subprocess.run(["python", "-m", "src.data.dsprites", "--download", "--build-cache"],
                     cwd=REPO_DIR, check=True)
     data_vol.commit()
 
 
 # gpu / max_containers mirror the Kaggle "dual-T4" setup: 2 workers in parallel.
-@app.function(gpu="L4", volumes=VOLUMES, timeout=6 * 3600, max_containers=2)
+# cpu/memory are explicit requests (Modal defaults to 0.125 core / 128 MiB
+# otherwise) so each worker gets a guaranteed 4 cores / 32 GB, not a burst-only minimum.
+# retries: a container that dies (hard OOM / eviction) is re-run automatically; it
+# resumes from last_ckpt.pt, so a crash costs at most one epoch, not the whole seed.
+@app.function(gpu="T4", cpu=4, memory=32768, volumes=VOLUMES, timeout=6 * 3600,
+              max_containers=2, retries=modal.Retries(max_retries=3, backoff_coefficient=1.0))
 def train_cell(cfg: str, cond: str, strg: str, seed: int) -> tuple[str, str]:
     rid = _run_id(cond, strg, seed)
     backbone = Path(REPO_DIR) / "results" / "encoders" / rid / "backbone.pt"
     if backbone.exists():
         return rid, "skipped (done)"
+    # expandable_segments cuts the CUDA fragmentation OOMs seen mid-sweep on T4
+    # (same env the Kaggle notebook sets); pinned per-process, not image-wide.
+    env = dict(os.environ, PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True")
     cmd = ["python", "-m", "src.encoders.train_simclr", "--config", cfg,
            "--set", f"run.seed={seed}", "run.num_workers=2", "run.device=cuda"]
-    rc = subprocess.run(cmd, cwd=REPO_DIR).returncode
+    rc = subprocess.run(cmd, cwd=REPO_DIR, env=env).returncode
     results_vol.commit()
     return rid, ("ok" if rc == 0 else f"failed (exit {rc})")
 
 
 @app.local_entrypoint()
 def run_sweep():
-    """Equivalent of notebook section 6 — trains every not-yet-done cell."""
+    """Equivalent of notebook section 6 — trains every not-yet-done cell.
+    order_outputs=False so results stream back as each seed finishes (not in
+    dispatch order); each finished seed is immediately pulled down from the
+    phase3-results volume into the local results/encoders/<run_id>/, so local
+    state tracks progress without waiting for the whole sweep."""
     todo = [j for j in TRAIN_JOBS if not
             Path(f"results/encoders/{_run_id(j[1], j[2], j[3])}/backbone.pt").exists()]
     print(f"{len(TRAIN_JOBS)} cells total, {len(todo)} dispatched to Modal "
           f"(remainder already have a local backbone.pt — train_cell also "
           f"re-checks the volume and skips done cells server-side)")
-    for rid, status in train_cell.starmap(TRAIN_JOBS):
+    # resolve the modal CLI next to this interpreter (sys.argv[0]/PATH may not
+    # have it — a sync hiccup must never be allowed to kill the whole sweep).
+    modal_bin = str(Path(sys.executable).parent / "modal")
+    # return_exceptions: a seed that dies past its retries yields the exception
+    # here instead of tearing down the whole app (and its healthy sibling).
+    for result in train_cell.starmap(TRAIN_JOBS, order_outputs=False,
+                                     return_exceptions=True):
+        if isinstance(result, Exception):
+            print(f"SEED FAILED (past retries): {result!r} — continuing")
+            continue
+        rid, status = result
         print(f"{rid}: {status}")
+        if status in ("ok", "skipped (done)"):
+            local_dir = Path("results/encoders") / rid
+            local_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                rc = subprocess.run(
+                    [modal_bin, "volume", "get", "--force", "phase3-results",
+                     f"encoders/{rid}", str(local_dir)],
+                ).returncode
+                print(f"  -> synced to {local_dir} (rc={rc})" if rc == 0
+                      else f"  -> SYNC FAILED for {rid} (rc={rc})")
+            except OSError as e:
+                print(f"  -> SYNC FAILED for {rid}: {e}")
 
 
 @app.function(volumes=VOLUMES, timeout=120)
@@ -138,33 +174,33 @@ def progress():
     print(f"\n~{remaining * EST_GPU_H_PER_CELL:.0f} GPU-h remaining")
 
 
-@app.function(gpu="L4", volumes=VOLUMES, timeout=1800)
+@app.function(gpu="T4", volumes=VOLUMES, timeout=1800)
 def quality_gate_check():
-    """Equivalent of notebook section 9 — sanity-check the first two encoders."""
+    """Equivalent of notebook section 9 — sanity-check the first encoder."""
     import json as _json
 
-    for rid in ["color_strong_seed0", "position_strong_seed0"]:
-        mp = Path(REPO_DIR) / "results" / "encoders" / rid / "metrics.json"
-        if not mp.exists():
-            print(f"{rid}: not trained yet")
-            continue
-        m = _json.loads(mp.read_text())
-        d = m.get("diagnostics", {})
-        print(f"{rid}: loss={m['final_loss']:.4f} nan={m['nan_aborted']} epochs={m['epochs_run']} | "
-              f"feat_std={d.get('feat_std'):.4f} eff_rank={d.get('eff_rank'):.1f} "
-              f"align={d.get('alignment'):.3f} unif={d.get('uniformity'):.3f}")
+    rid = "position_strong_seed0"
+    mp = Path(REPO_DIR) / "results" / "encoders" / rid / "metrics.json"
+    if not mp.exists():
+        print(f"{rid}: not trained yet")
+        return
+    m = _json.loads(mp.read_text())
+    d = m.get("diagnostics", {})
+    print(f"{rid}: loss={m['final_loss']:.4f} nan={m['nan_aborted']} epochs={m['epochs_run']} | "
+          f"feat_std={d.get('feat_std'):.4f} eff_rank={d.get('eff_rank'):.1f} "
+          f"align={d.get('alignment'):.3f} unif={d.get('uniformity'):.3f}")
 
     subprocess.run(
         ["python", "-m", "src.eval.quality_gate",
-         "--config", "configs/run/color_strong.yaml",
-         "--simclr", "results/encoders/color_strong_seed0/backbone.pt",
-         "--random-seed", "0", "--out", "results/quality_gate/color_strong_seed0.json"],
+         "--config", "configs/run/position_strong.yaml",
+         "--simclr", f"results/encoders/{rid}/backbone.pt",
+         "--random-seed", "0", "--out", f"results/quality_gate/{rid}.json"],
         cwd=REPO_DIR, check=True,
     )
     results_vol.commit()
 
 
-@app.function(gpu="L4", volumes=VOLUMES, timeout=6 * 3600, max_containers=1)
+@app.function(gpu="T4", volumes=VOLUMES, timeout=6 * 3600, max_containers=1)
 def probe_sweep(condition: str, strength: str, dataset: str, extra: list[str]):
     """Equivalent of one iteration of notebook section 10. Probing is
     feature-extraction + small-MLP fits — single GPU is enough, no need

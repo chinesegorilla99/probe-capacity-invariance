@@ -1,0 +1,212 @@
+% ============================================================
+% Probe Capacity & Contrastive Invariance -- paper skeleton
+% Compile with pdfLaTeX (or upload as-is to Overleaf)
+% STATUS: outline only -- Phase 1 (encoder pipeline) not yet complete.
+% Results-dependent sections are placeholders; fill in once the
+% sweep (Sec 7 of ResearchOverview.md) finishes.
+% ============================================================
+
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+\usepackage[round]{natbib}
+\bibliographystyle{plainnat}
+
+\newcommand{\R}{R}          % recoverability
+\newcommand{\Sel}{S}        % probe selectivity
+\newcommand{\G}{G}          % encoder gain
+\newcommand{\epsG}{\varepsilon_G}
+
+\title{When ``Invariant'' Means ``Linearly Inaccessible'': \\
+A Controlled Study of Probe Capacity in Contrastive Learning}
+% Working title -- pick the final title from results (ResearchOverview.md \S0).
+
+\author{Author Name \\ Affiliation \\ \texttt{email@example.com}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+% TODO (write last, after results): 150--250 words covering the
+% measurement confound, the probe-capacity-ladder method, the
+% headline flip-count / G-map result, and the takeaway for
+% augmentation-choice practice.
+Placeholder abstract.
+\end{abstract}
+
+% ============================================================
+\section{Introduction}
+\label{sec:intro}
+% One-sentence thesis (ResearchOverview.md \S1):
+% Contrastive "invariance" is almost always measured with a linear
+% probe; a linear probe's failure to recover a factor may reflect
+% probe weakness, not representation content. This paper tests,
+% under controlled conditions, whether invariance survives stronger
+% probes or dissolves into a measurement artifact.
+%
+% - Motivate: augmentation-choice folklore in SSL treats linear-probe
+%   "invariance" as ground truth (\S3 why-it-matters).
+% - State the confound plainly.
+% - Preview contributions:
+%   1. probe-capacity ladder + random-encoder control applied to the
+%      invariance claim (methodology borrowed from Hewitt \& Liang,
+%      application is the contribution -- \S4 novelty).
+%   2. per-factor G-map (encoder gain vs. capacity) on Shapes3D/dSprites.
+%   3. headline verdict-stability flip count between linear and top-rung probes.
+% - State the two-way payoff: either outcome (artifact map or
+%   genuine-invariance validation) is a contribution (\S10).
+
+\section{Related Work}
+\label{sec:related}
+% Structure per ResearchOverview.md \S4 (gap) -- do NOT draft prose
+% before entering the writing phase; see CLAUDE.md "Writing-phase
+% reminders" for the additional citations to weave in at that point
+% (Lee \& Kondor 2026; Chaudhry 2026; Yu et al. 2026) and the
+% scoping directive (novelty is the controlled invariance-measurement
+% map, not the general "nonlinear probe recovers more" claim).
+\subsection{Probing methodology}
+% Hewitt \& Liang control tasks; Pimentel et al. counterpoint (powerful probes).
+\subsection{What contrastive learning encodes}
+% von K\"ugelgen et al.; Tian et al.; HaoChen et al.; Balestriero \& LeCun.
+\subsection{Encoder vs.\ projector}
+% Cosentino et al. 2022 -- basis of H4; Chaudhry 2026 (writing-phase add).
+\subsection{Positioning}
+% State the specific open seam per Phase 0 novelty verdict
+% (lab-notebook/phase0/novelty-verdict.md, local only).
+
+% ============================================================
+\section{Problem Setup and Definitions}
+\label{sec:defs}
+% Copy verbatim from preregistration/prereg.md \S\S1--5 (LOCKED 2026-06-28).
+% Do not restate informally -- these are frozen operational definitions.
+
+\subsection{Generative factors and ground truth}
+% Shapes3D (floor hue, wall hue, object hue, scale, orientation -- continuous;
+% shape -- categorical) primary; dSprites (shape, scale, orientation, x, y) secondary.
+
+\subsection{Recoverability, selectivity, and encoder gain}
+% R(F,c): probe-test performance at capacity c, normalized [0,1]
+%   categorical: (acc - chance)/(1 - chance); continuous: R^2 (unclipped).
+% S(F,c) = R(real labels) - R(random labels)      [Hewitt-Liang control task]
+% G(F,c) = R(trained encoder) - R(random encoder) [headline metric]
+% Capacity gap: Delta_G(F) = G(F, top rung) - G(F, linear).
+% Commensurability note (FIX 1): normalized-accuracy and R^2 never pooled
+% or rank-compared across factor types.
+
+\subsection{$\epsG$-invariance (dual-gate definition)}
+% G(F,c) <= eps_G            => invariant (report G<0 sub-case separately)
+% G(F,c) > eps_G and S > 0   => genuine recovery
+% G(F,c) > eps_G and S <= 0  => inconclusive / probe-driven (dead zone)
+% eps_G primary: data-derived per-factor (95% CI bound, random-vs-random
+% encoder null); eps_G = 0.05 normalized is a sensitivity analysis only.
+
+% ============================================================
+\section{Method}
+\label{sec:method}
+
+\subsection{Encoders}
+% SimCLR-style: backbone f (small ResNet / compact CNN), projector g,
+% NT-Xent/InfoNCE, temperature tau. Probe frozen f; report projector
+% results separately (Cosentino-style axis, H4).
+
+\subsection{Augmentation conditions}
+% Table: Color (hue/color jitter) / Position (crop-translation) /
+% Orientation (rotation) / Scale (random-resized-crop) / Control-aug
+% (minimal), each at 2 strengths (weak, strong).
+\begin{table}[H]
+\centering
+\caption{Augmentation conditions and targeted factors.}
+\label{tab:conditions}
+\begin{tabular}{lll}
+\toprule
+Condition & Augmentation & Targeted factor \\
+\midrule
+Color       & hue/color jitter          & object (\,+wall/floor\,) hue \\
+Position    & random crop / translation & x, y position \\
+Orientation & rotation                  & orientation \\
+Scale       & random resized crop       & scale \\
+Control-aug & minimal / none            & --- (baseline) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Probe-capacity ladder}
+% (1) linear -- (2) MLP 1-hidden small -- (3) MLP 1-hidden large --
+% (4) MLP 2-hidden. Monotone capacity; capacity reported as an explicit
+% measure (param count / effective DOF) per rung (deferred to probe-build,
+% engaging Lee \& Kondor 2026 at writing time).
+
+\subsection{Controls}
+% Random-LABEL control (defines S); random-ENCODER control, matched
+% architecture, untrained (defines G); supervised-reference encoder
+% (diagnostic ceiling only, not in any decision rule); encoder-quality
+% gate (downstream linear-probe accuracy) before any invariance claim.
+
+\subsection{Experimental design}
+% Factorial sweep: factors (5-6) x conditions (4+control) x strengths (2)
+% x probe capacities (4) x seeds (>=10). Seed controls both encoder and
+% probe init. Probe-train size held fixed across the capacity ladder;
+% probe-train/val/test split; regularization tuned on val only.
+
+% ============================================================
+\section{Hypotheses}
+\label{sec:hyp}
+% Reproduce H1-H4 verbatim from prereg.md \S6 (LOCKED) with their
+% confirm/refute rules -- write this section from the frozen file,
+% not paraphrased.
+\begin{itemize}
+  \item \textbf{H1 (capacity dependence).}
+  \item \textbf{H2 (heterogeneity).}
+  \item \textbf{H3 (genuine invariance via control).}
+  \item \textbf{H4 (encoder-vs-projector localization).}
+\end{itemize}
+
+% ============================================================
+\section{Statistical Analysis Plan}
+\label{sec:stats}
+% Bootstrap CIs on G, S, Delta_G (paired seed resampling shared across
+% gates); effect sizes with CIs; Wilcoxon signed-rank for paired
+% comparisons; Holm correction across the factor x condition family;
+% report per-cell, never collapse to a single average (prereg.md \S7).
+
+% ============================================================
+\section{Results}
+\label{sec:results}
+% PLACEHOLDER -- do not draft until the core sweep (ResearchOverview.md
+% \S15, Months 3-4) completes and the encoder-quality gate passes.
+
+\subsection{Encoder-quality gate}
+\subsection{Per-factor recoverability-vs-capacity curves}
+\subsection{Encoder gain G and the capacity gap $\Delta_G$}
+\subsection{Verdict-stability flip count}
+\subsection{Encoder vs.\ projector (H4)}
+
+% ============================================================
+\section{Discussion}
+\label{sec:discussion}
+\subsection{Interpretation}
+\subsection{Implications for augmentation choice}
+\subsection{Limitations}
+% Threats to validity per ResearchOverview.md \S11: probe overfitting
+% (mitigated by control + held-out test), synthetic-vs-real scope,
+% projector confound, encoder undertraining, capacity/sample-size
+% confound (probe-train size fixed).
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+\section*{AI Disclosure}
+% Per preregistration/prereg.md \S7: literature search and drafting
+% assistance used AI tools; recorded for transparency.
+
+\section*{Acknowledgments}
+
+\bibliography{references}
+
+\end{document}

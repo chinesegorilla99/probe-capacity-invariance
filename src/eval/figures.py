@@ -131,6 +131,7 @@ def fig_g_ladder(cell, stats, out: Path, synthetic: bool) -> None:
                              sharex=True, sharey=True)
     axes = np.atleast_1d(axes).ravel()
     G, eps, rows = stats["G"], stats["eps"], []
+    r_tr, r_fl = stats["levels"]["h"], stats["levels"]["random floor"]
     for fi, (ax, fname) in enumerate(zip(axes, names)):
         hit = fname in targeted
         c = BLUE if hit else MUTED
@@ -143,12 +144,20 @@ def fig_g_ladder(cell, stats, out: Path, synthetic: bool) -> None:
                      fontweight="bold" if hit else "normal")
         ax.set_xticks(x, cell.rungs)
         ax.tick_params(axis="x", rotation=20)
+        # CSV twin also carries the absolute levels (A1 §c): G is relative, so a
+        # reader can always see whether an "invariant" cell sits on a high floor.
         for ri, rname in enumerate(cell.rungs):
             rows.append({"factor": fname, "rung": rname, "targeted": hit,
                          "G_mean": round(float(G["mean"][fi, ri]), 4),
                          "G_lo": round(float(G["lo"][fi, ri]), 4),
                          "G_hi": round(float(G["hi"][fi, ri]), 4),
-                         "epsilon_G": round(float(eps[fi, ri]), 4)})
+                         "epsilon_G": round(float(eps[fi, ri]), 4),
+                         "R_trained_mean": round(float(r_tr[0][fi, ri]), 4),
+                         "R_trained_lo": round(float(r_tr[1][fi, ri]), 4),
+                         "R_trained_hi": round(float(r_tr[2][fi, ri]), 4),
+                         "R_floor_mean": round(float(r_fl[0][fi, ri]), 4),
+                         "R_floor_lo": round(float(r_fl[1][fi, ri]), 4),
+                         "R_floor_hi": round(float(r_fl[2][fi, ri]), 4)})
     for ax in axes[len(names):]:
         ax.set_visible(False)
     for r in range(nrow):
