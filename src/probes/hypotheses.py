@@ -81,6 +81,43 @@ TARGETED_FACTORS = {
 EXPECTED_CELLS = ("color_strong", "position_strong", "control_strong",
                   "orientation_strong", "scale_strong")
 
+# Q16 / Amendment A3 (2026-07-15): non-identifiable readouts. dSprites orientation
+# is the full [0, 2*pi) circle and is unrecoverable for the symmetric shapes (square
+# 90deg-periodic, ellipse 180deg-periodic), so no encoder can recover it and any
+# G<=eps_G verdict on it is vacuous. Excluded from ALL confirmatory families (H1-H3)
+# and the headline flip count; RETAINED per-factor as a labeled diagnostic. Keyed on
+# (dataset, factor) so Shapes3D orientation (bounded arc, identifiable) is unaffected.
+DIAGNOSTIC_ONLY_READOUTS = frozenset({("dsprites", "orientation")})
+
+
+def _diagnostic_only_names(cell) -> set[str]:
+    return {f.name for f in cell.factors
+            if (cell.dataset, f.name) in DIAGNOSTIC_ONLY_READOUTS}
+
+
+def _apply_q16(report: dict, h1: dict, h2: dict, h3: dict, diag_names: set[str]) -> None:
+    """Drop non-identifiable diagnostic readouts from the confirmatory families and
+    the flip count, tagging their per-factor rows; the per-factor table is retained."""
+    if not diag_names:
+        return
+    report["diagnostic_only_factors"] = sorted(diag_names)
+    for key in ("flips_primary", "flips_fixed_0.05"):
+        fl = report[key]
+        fl["flipped_factors"] = [f for f in fl["flipped_factors"] if f not in diag_names]
+        fl["n_flips"] = len(fl["flipped_factors"])
+    h1["confirmed_factors"] = [f for f in h1["confirmed_factors"] if f not in diag_names]
+    h1["confirmed_factors_fixed_0.05"] = [f for f in h1["confirmed_factors_fixed_0.05"]
+                                          if f not in diag_names]
+    h1["confirmed"] = bool(h1["confirmed_factors"])
+    h2["pairs"] = [p for p in h2["pairs"] if not (set(p["pair"]) & diag_names)]
+    h3["confirmed_factors"] = [f for f in h3["confirmed_factors"] if f not in diag_names]
+    h3["confirmed"] = bool(h3["confirmed_factors"])
+    for rows in (h1["per_factor"], h3["per_factor"]):
+        for row in rows:
+            if row["factor"] in diag_names:
+                row["diagnostic_only"] = True
+
+
 _INVARIANT_CASES = {"invariant", "suppressed"}
 
 
@@ -141,8 +178,18 @@ def load_cell(cell_dir: str | Path) -> Cell:
     trained_seeds = list(meta["seeds"]["trained"])
     random_seeds = list(meta["seeds"]["random"])
 
-    # Gate-failed encoders never enter the stats (prereg §5 / D022).
+    # Gate-failed encoders never enter the stats (prereg §5 / D022) — EXCEPT the
+    # control-aug baseline, which is exempt from the encoder-quality gate: by
+    # design it is a minimal-augmentation encoder expected to sit at the random
+    # floor, so its near-random recoverability is the intended datum, not a
+    # training failure (prereg Amendment A2, 2026-07-14). Retain all its encoders.
     failed = sorted(set(meta.get("quality_gate", {}).get("failed_seed_indices", [])))
+    if meta.get("condition") == "control" and failed:
+        warnings.append(
+            f"control-aug: {len(failed)} encoder(s) below the shape gate RETAINED "
+            "(gate exempt per Amendment A2); near-random recoverability is the baseline datum"
+        )
+        failed = []
     if failed:
         keep = [i for i in range(trained.shape[0]) if i not in failed]
         trained, perm, projector = trained[keep], perm[keep], projector[keep]
@@ -273,6 +320,8 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
     """
     names = [f.name for f in cell.factors]
     n = cell.trained.shape[0]
+    diag_names = _diagnostic_only_names(cell)                    # Q16 / Amendment A3
+    conf = np.array([nm not in diag_names for nm in names], bool)  # confirmatory-factor mask
 
     # Per-seed paired quantities. All CIs below resample the same n-seed axis
     # with instrument's common bootstrap rng -> shared draws across gates.
@@ -306,9 +355,10 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
     # Flip-count seed-bootstrap uncertainty (A1 §c) at fixed eps thresholds;
     # raw draws kept under "_" for the study-level sum in assemble().
     flip_unc, flip_draws = {}, {}
+    conf_factors = tuple(f for f in cell.factors if f.name not in diag_names)  # Q16 / A3
     for key, eps_arr in (("primary", eps_used),
                          ("fixed_0.05", np.full_like(eps_used, EPS_FIXED))):
-        fb = flip_bootstrap(g, eps_arr, n_boot=n_boot, factors=cell.factors)
+        fb = flip_bootstrap(g[:, conf], eps_arr[conf], n_boot=n_boot, factors=conf_factors)
         flip_draws[key] = fb.pop("_draws")
         flip_unc[key] = fb
 
@@ -422,6 +472,8 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
         "targeted_factors": targeted,
         "tests": h4_tests,
     }
+
+    _apply_q16(report, h1, h2, h3, diag_names)   # drop non-identifiable readouts (A3)
 
     return {
         "cell": cell.name,
@@ -547,7 +599,8 @@ def assemble(results: list[dict], alpha: float = ALPHA) -> dict:
     # H1 — confirm rule is the CI conjunction; Wilcoxon is supporting evidence,
     # Holm-corrected across the factor x condition cell family (prereg §7).
     h1_rows = [dict(cell=r["cell"], **row) for r in results for row in r["h1"]["per_factor"]]
-    for row, a in zip(h1_rows, holm([row["p_wilcoxon_greater"] for row in h1_rows])):
+    conf_rows = [row for row in h1_rows if not row.get("diagnostic_only")]  # Q16 / A3
+    for row, a in zip(conf_rows, holm([row["p_wilcoxon_greater"] for row in conf_rows])):
         row["p_wilcoxon_holm"] = float(a)
     h1_conf = [[r["cell"], f] for r in results for f in r["h1"]["confirmed_factors"]]
     h1 = {
@@ -582,13 +635,15 @@ def assemble(results: list[dict], alpha: float = ALPHA) -> dict:
 
     # H3 — existence across the ladder, per cell.
     h3_conf = [[r["cell"], row["factor"], row["subcase"]] for r in results
-               for row in r["h3"]["per_factor"] if row["invariant_all_rungs"]]
+               for row in r["h3"]["per_factor"]
+               if row["invariant_all_rungs"] and not row.get("diagnostic_only")]  # Q16 / A3
     h3 = {
         "statement": "some factor stays epsilon_G-invariant at every capacity",
         "confirmed_cells_factors": h3_conf,
         "confirmed_fixed_0.05": [[r["cell"], row["factor"]] for r in results
                                  for row in r["h3"]["per_factor"]
-                                 if row["invariant_all_rungs_fixed_0.05"]],
+                                 if row["invariant_all_rungs_fixed_0.05"]
+                                 and not row.get("diagnostic_only")],
         "status": "confirmed" if h3_conf else "refuted",
         "note": "suppressed (G<0 everywhere) and noise-band sub-cases reported distinctly",
     }
@@ -654,6 +709,7 @@ def assemble(results: list[dict], alpha: float = ALPHA) -> dict:
     for r in results:
         flipped_p = set(r["report"]["flips_primary"]["flipped_factors"])
         flipped_f = set(r["report"]["flips_fixed_0.05"]["flipped_factors"])
+        diag = set(r["report"].get("diagnostic_only_factors", []))   # Q16 / A3
         for fname, rows in r["report"]["table"].items():
             case_lin, case_top = rows[0]["case"], rows[-1]["case"]
             table.append({
@@ -664,6 +720,7 @@ def assemble(results: list[dict], alpha: float = ALPHA) -> dict:
                 "flip_primary": fname in flipped_p,
                 "flip_fixed_0.05": fname in flipped_f,
                 "verdict": _verdict_label(case_lin, case_top),
+                "diagnostic_only": fname in diag,
             })
 
     return {
