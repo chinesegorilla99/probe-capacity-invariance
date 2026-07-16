@@ -53,6 +53,44 @@ def run_id_from_cfg(cfg: dict) -> str:
     return f"{aug['condition']}_{aug['strength']}_seed{cfg['run']['seed']}"
 
 
+def _recover_final(log_path: Path) -> tuple[float, dict]:
+    """Recover (final_loss, diagnostics) from the last train_log line."""
+    last = None
+    if log_path.exists():
+        for line in log_path.read_text().splitlines():
+            if line.strip():
+                last = json.loads(line)
+    if not last or last.get("event") == "nan_abort":
+        return float("nan"), {}
+    keys = ("feat_std", "eff_rank", "alignment", "uniformity")
+    diag = {k: last[k] for k in keys if k in last}
+    return float(last.get("loss", float("nan"))), diag
+
+
+def _finalize(out_dir, cfg, model, seed, final_loss, diag, epochs_run, nan_aborted=False):
+    """Write metrics.json and the frozen backbone.pt checkpoint."""
+    metrics = {
+        "run_id": run_id_from_cfg(cfg),
+        "seed": seed,
+        "final_loss": final_loss,
+        "nan_aborted": nan_aborted,
+        "diagnostics": diag,
+        "epochs_run": epochs_run,
+    }
+    (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
+    torch.save(
+        {
+            "kind": "simclr",
+            "seed": seed,
+            "backbone": model.backbone.state_dict(),
+            "projector": model.projector.state_dict(),
+            "config": cfg,
+            "final_loss": final_loss,
+        },
+        out_dir / "backbone.pt",
+    )
+
+
 def train_simclr(cfg: dict) -> Path:
     run = cfg["run"]
     seed = int(run["seed"])
@@ -139,8 +177,16 @@ def train_simclr(cfg: dict) -> Path:
         start_epoch = ckpt["epoch"] + 1
         print(f"[simclr] resumed from {ckpt_path} at epoch {start_epoch}")
 
-    if start_epoch >= run["epochs"] and final_path.exists():
-        print(f"[simclr] {run_id_from_cfg(cfg)} already completed — skipping")
+    if start_epoch >= run["epochs"]:
+        if final_path.exists():
+            print(f"[simclr] {run_id_from_cfg(cfg)} already completed — skipping")
+            return final_path
+        # Training reached the last epoch but finalization was interrupted before
+        # backbone.pt was written. Finalize from the loaded checkpoint (recovering
+        # loss/diagnostics from the last train_log line) instead of retraining.
+        final_loss, last_diag = _recover_final(out_dir / "train_log.jsonl")
+        _finalize(out_dir, cfg, model, seed, final_loss, last_diag, run["epochs"])
+        print(f"[simclr] finalized {final_path} from checkpoint (no retrain)")
         return final_path
 
     logger = JsonlLogger(out_dir / "train_log.jsonl")
@@ -204,25 +250,9 @@ def train_simclr(cfg: dict) -> Path:
 
     logger.close()
     final_loss = float("nan") if nan_aborted else avg
-    metrics = {
-        "run_id": run_id_from_cfg(cfg),
-        "seed": seed,
-        "final_loss": final_loss,
-        "nan_aborted": nan_aborted,
-        "diagnostics": last_diag,
-        "epochs_run": epoch + (0 if nan_aborted else 1),
-    }
-    (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
-    torch.save(
-        {
-            "kind": "simclr",
-            "seed": seed,
-            "backbone": model.backbone.state_dict(),
-            "projector": model.projector.state_dict(),
-            "config": cfg,
-            "final_loss": final_loss,
-        },
-        final_path,
+    _finalize(
+        out_dir, cfg, model, seed, final_loss, last_diag,
+        epoch + (0 if nan_aborted else 1), nan_aborted,
     )
     print(f"[simclr] saved {final_path} (final_loss={final_loss:.4f})")
     return final_path
