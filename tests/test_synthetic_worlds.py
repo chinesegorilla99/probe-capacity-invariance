@@ -2,8 +2,9 @@
 
 Emits the full first-slice grid under both hand-set ground truths (null /
 artifact, src/probes/synthetic.py) at the sweep seed count (12, D025) and
-asserts the UNCHANGED stats layer recovers each world's truth — including H2,
-which is decidable at n=12 but not at n=10 (Q15; checked both ways here).
+asserts the UNCHANGED stats layer recovers each world's truth — including H2's
+Wilcoxon x Holm floor calibration at n=10 vs n=12 (Q15, recalibrated by A3's
+family narrowing; checked both ways here).
 Complements tests/test_hypotheses.py (per-cell unit tests) at the
 study-assembly level.
 
@@ -76,17 +77,23 @@ class TestSyntheticWorlds(unittest.TestCase):
         self.assertEqual(self.studies["null"]["hypotheses"]["H2"]["status"], "refuted")
 
     def test_h2_power_cliff_at_n10(self):
-        # Q15: identical artifact ground truth, n=10 -> H2 structurally refuted
+        # Q15/A3 calibration: identical artifact ground truth at n=10. On the
+        # pre-A3 26-pair family H2 was structurally refuted (floor 0.051 > alpha);
+        # A3 drops the 3 vacuous dSprites-orientation pairs, moving the floor to
+        # 23*2/2^10 = 0.0449 — decidable, but only for perfectly sign-consistent
+        # pairs (the next achievable Wilcoxon p already misses Holm). D025's n=12
+        # choice keeps its W<=2 tolerance rationale.
         tmp = tempfile.mkdtemp()
         try:
             root = emit_world("artifact", Path(tmp), n_t=10, n_r=10, seed=0)
             study, fails = validate_world("artifact", root, n_boot=N_BOOT, n_t=10)
-            self.assertEqual(fails, [])  # expected() knows n=10 is undecidable
+            self.assertEqual(fails, [])  # expected() tracks the realized family
             pairs = study["hypotheses"]["H2"]["pairs"]
-            self.assertEqual(study["hypotheses"]["H2"]["status"], "refuted")
-            self.assertGreater(h2_floor(10, len(pairs)), ALPHA)
-            self.assertGreater(min(e["p_holm"] for e in pairs), ALPHA)
-            # the information is present — only the confirm rule can't reach it
+            self.assertEqual(len(pairs), 23)               # A3: 26 - 3 orientation pairs
+            self.assertGreater(h2_floor(10, 26), ALPHA)    # pre-A3 cliff (historical)
+            self.assertLess(h2_floor(10, len(pairs)), ALPHA)
+            self.assertGreater(2 * h2_floor(10, len(pairs)), ALPHA)  # W=0 only
+            self.assertEqual(study["hypotheses"]["H2"]["status"], "confirmed")
             self.assertTrue(any(e["ci_excludes_0"] for e in pairs))
         finally:
             shutil.rmtree(tmp)

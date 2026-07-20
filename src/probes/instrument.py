@@ -173,6 +173,27 @@ def flip_bootstrap(g_perseed: np.ndarray, eps, n_boot=2000, seed=0, factors=FACT
 
 EPS_FIXED = 0.05  # sensitivity-only fixed threshold (prereg §4, FIX 2/5)
 
+SATURATION_LEVEL = 0.90  # A4: null-saturated iff mean random-floor recoverability >= this
+
+
+def null_saturation(random_stack: np.ndarray, level: float = SATURATION_LEVEL) -> dict:
+    """A4 null-headroom diagnostic: floor means, per-rung saturation, flip-endpoint flag.
+
+    Where the matched random-encoder floor sits near the ceiling of the normalized
+    scale, G is compressed toward 0 by construction and "G <= epsilon_G" cannot
+    distinguish absence from lack of headroom. A readout is null-saturated for the
+    flip statistic iff the mean floor is >= ``level`` at the linear rung or the top
+    rung (the two rungs the flip boolean compares). Reporting only — enters no
+    decision rule; the saturation-excluded flip variants are co-reported.
+    """
+    floor_mean = random_stack.mean(0)  # [F, R]
+    sat = floor_mean >= level
+    return {
+        "floor_mean": floor_mean,
+        "saturated": sat,
+        "flip_endpoint_saturated": sat[:, 0] | sat[:, -1],
+    }
+
 
 def build_report(trained_stack, random_stack, real_stack, perm_stack, *, factors=FACTORS, eps_boot=2000):
     """Assemble the per-(factor, rung) G / S / epsilon_G table + case grid + flip counts.

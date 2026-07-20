@@ -55,10 +55,12 @@ from scipy.stats import wilcoxon
 from .instrument import (
     EPS_FIXED,
     RUNG_NAMES,
+    SATURATION_LEVEL,
     _boot_mean_ci,
     build_report,
     epsilon_g,
     flip_bootstrap,
+    null_saturation,
     paired_gain,
     selectivity,
 )
@@ -352,13 +354,35 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
             for fi, fac in enumerate(cell.factors)
         }
 
+    # Null-headroom diagnostic (A4): floor saturation flags; reporting only.
+    ns = null_saturation(cell.random_stats)
+    sat_flip = ns["flip_endpoint_saturated"]
+    null_sat = {
+        "level": SATURATION_LEVEL,
+        "floor_mean": {fac.name: [float(x) for x in ns["floor_mean"][fi]]
+                       for fi, fac in enumerate(cell.factors)},
+        "saturated_by_rung": {fac.name: [bool(b) for b in ns["saturated"][fi]]
+                              for fi, fac in enumerate(cell.factors)},
+        "saturated_factors_flip": [fac.name for fi, fac in enumerate(cell.factors)
+                                   if sat_flip[fi]],
+        "note": "A4: diagnostic only; saturation-excluded flip variants co-reported; "
+                "no decision rule changes",
+    }
+
     # Flip-count seed-bootstrap uncertainty (A1 §c) at fixed eps thresholds;
-    # raw draws kept under "_" for the study-level sum in assemble().
+    # raw draws kept under "_" for the study-level sum in assemble(). The A4
+    # saturation-excluded variants use the same machinery on the masked factor set.
     flip_unc, flip_draws = {}, {}
     conf_factors = tuple(f for f in cell.factors if f.name not in diag_names)  # Q16 / A3
-    for key, eps_arr in (("primary", eps_used),
-                         ("fixed_0.05", np.full_like(eps_used, EPS_FIXED))):
-        fb = flip_bootstrap(g[:, conf], eps_arr[conf], n_boot=n_boot, factors=conf_factors)
+    excl = conf & ~sat_flip                                                    # A4
+    excl_factors = tuple(f for fi, f in enumerate(cell.factors) if excl[fi])
+    variants = [("primary", eps_used, conf, conf_factors),
+                ("fixed_0.05", np.full_like(eps_used, EPS_FIXED), conf, conf_factors),
+                ("primary_excl_null_saturated", eps_used, excl, excl_factors),
+                ("fixed_0.05_excl_null_saturated", np.full_like(eps_used, EPS_FIXED),
+                 excl, excl_factors)]
+    for key, eps_arr, mask, facs in variants:
+        fb = flip_bootstrap(g[:, mask], eps_arr[mask], n_boot=n_boot, factors=facs)
         flip_draws[key] = fb.pop("_draws")
         flip_unc[key] = fb
 
@@ -475,6 +499,18 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
 
     _apply_q16(report, h1, h2, h3, diag_names)   # drop non-identifiable readouts (A3)
 
+    # A4 saturation-excluded flip lists, derived from the (q16-filtered) primary
+    # lists so both exclusions compose; additive reporting only.
+    sat_names = set(null_sat["saturated_factors_flip"])
+    for key in ("flips_primary", "flips_fixed_0.05"):
+        fl = report[key]
+        kept = [f for f in fl["flipped_factors"] if f not in sat_names]
+        report[key + "_excl_null_saturated"] = {
+            "n_flips": len(kept),
+            "flipped_factors": kept,
+            "excluded_null_saturated": sorted(set(fl["flipped_factors"]) & sat_names),
+        }
+
     return {
         "cell": cell.name,
         "dataset": cell.dataset,
@@ -487,6 +523,7 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
         "rungs": list(cell.rungs),
         "report": report,
         "levels": levels,
+        "null_saturation": null_sat,
         "flip_uncertainty": flip_unc,
         "epsilon_diagnostics": eps_diag,
         "h1": h1,
@@ -592,6 +629,11 @@ def assemble(results: list[dict], alpha: float = ALPHA) -> dict:
                          f"flips the invariance verdict at {cells}; a dated prereg "
                          "amendment (winsorized-null / MAD epsilon_G) must be weighed "
                          "before any headline claim rests on these cells")
+        sat = r.get("null_saturation", {}).get("saturated_factors_flip", [])
+        if sat:
+            notes.append(f"{r['cell']}: null-saturated readouts {sat} (random floor >= "
+                         f"{SATURATION_LEVEL} at a flip endpoint, A4) — quote the "
+                         "saturation-excluded flip count alongside the primary")
     if provisional:
         notes.append(f"provisional: expected cells missing {missing}; refute verdicts are "
                      "not final until the full first-slice grid lands (D022)")
@@ -681,17 +723,25 @@ def assemble(results: list[dict], alpha: float = ALPHA) -> dict:
                       "so H4 is neither confirmed nor refuted")
 
     # Headline: verdict-stability flip count over (factor, condition) cells.
+    # A4: the saturation-excluded variants are co-reported; any headline sentence
+    # quoting the flip count must quote both.
     def flips(key):
         rows = [{"cell": r["cell"], "factor": f} for r in results
-                for f in r["report"][key]["flipped_factors"]]
+                for f in r["report"].get(key, {}).get("flipped_factors", [])]
         return {"n_flips": len(rows), "flips": rows}
 
-    headline = {"primary": flips("flips_primary"), "fixed_0.05": flips("flips_fixed_0.05")}
+    headline = {
+        "primary": flips("flips_primary"),
+        "fixed_0.05": flips("flips_fixed_0.05"),
+        "primary_excl_null_saturated": flips("flips_primary_excl_null_saturated"),
+        "fixed_0.05_excl_null_saturated": flips("flips_fixed_0.05_excl_null_saturated"),
+    }
 
     # Study-level flip uncertainty (A1 §c): cells resample independently, the
     # per-draw counts sum across cells.
     uncertainty = {}
-    for key in ("primary", "fixed_0.05"):
+    for key in ("primary", "fixed_0.05",
+                "primary_excl_null_saturated", "fixed_0.05_excl_null_saturated"):
         draws = [r.get("_flip_draws", {}).get(key) for r in results]
         if draws and all(d is not None for d in draws):
             total = np.sum(np.stack(draws), axis=0)
@@ -710,6 +760,7 @@ def assemble(results: list[dict], alpha: float = ALPHA) -> dict:
         flipped_p = set(r["report"]["flips_primary"]["flipped_factors"])
         flipped_f = set(r["report"]["flips_fixed_0.05"]["flipped_factors"])
         diag = set(r["report"].get("diagnostic_only_factors", []))   # Q16 / A3
+        satset = set(r.get("null_saturation", {}).get("saturated_factors_flip", []))  # A4
         for fname, rows in r["report"]["table"].items():
             case_lin, case_top = rows[0]["case"], rows[-1]["case"]
             table.append({
@@ -721,6 +772,7 @@ def assemble(results: list[dict], alpha: float = ALPHA) -> dict:
                 "flip_fixed_0.05": fname in flipped_f,
                 "verdict": _verdict_label(case_lin, case_top),
                 "diagnostic_only": fname in diag,
+                "null_saturated": fname in satset,
             })
 
     return {
@@ -789,7 +841,9 @@ def _main() -> None:
         print(f"[hyp]   {name}: {hs[name]['status']}")
     hl = study["headline_flip_count"]
     print(f"[hyp]   flips: primary={hl['primary']['n_flips']} "
-          f"fixed_0.05={hl['fixed_0.05']['n_flips']}")
+          f"fixed_0.05={hl['fixed_0.05']['n_flips']} | excl-null-saturated: "
+          f"primary={hl['primary_excl_null_saturated']['n_flips']} "
+          f"fixed_0.05={hl['fixed_0.05_excl_null_saturated']['n_flips']}")
     for key, u in hl.get("uncertainty", {}).items():
         print(f"[hyp]   flips[{key}] seed-bootstrap: mean={u['n_flips_mean']:.2f} "
               f"ci95={u['n_flips_ci95']}")

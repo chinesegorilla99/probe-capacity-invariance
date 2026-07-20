@@ -238,7 +238,21 @@ class TestHypotheses(unittest.TestCase):
             self.assertAlmostEqual(fu["n_flips_mean"], 1.0, delta=0.3)
         self.assertEqual(self.res["flip_uncertainty"]["fixed_0.05"]["n_flips_ci95"],
                          [1.0, 1.0])
-        self.assertEqual(set(self.res["_flip_draws"]), {"primary", "fixed_0.05"})
+        self.assertEqual(set(self.res["_flip_draws"]),
+                         {"primary", "fixed_0.05",
+                          "primary_excl_null_saturated", "fixed_0.05_excl_null_saturated"})
+
+    def test_null_saturation_absent_at_low_floor(self):
+        # A4: floors sit at ~0.5 here, so nothing is saturated and the
+        # saturation-excluded flip lists equal the primary ones
+        ns = self.res["null_saturation"]
+        self.assertEqual(ns["level"], 0.90)
+        self.assertEqual(ns["saturated_factors_flip"], [])
+        rep = self.res["report"]
+        for key in ("flips_primary", "flips_fixed_0.05"):
+            self.assertEqual(rep[key + "_excl_null_saturated"]["flipped_factors"],
+                             rep[key]["flipped_factors"])
+            self.assertEqual(rep[key + "_excl_null_saturated"]["excluded_null_saturated"], [])
 
     def test_levels_reported(self):
         # A1 §c: absolute R levels co-reported; trained mean must match the stack
@@ -301,6 +315,51 @@ class TestHypotheses(unittest.TestCase):
         self.assertGreaterEqual(unc["n_flips_ci95"][0], 1.0)
         self.assertLessEqual(unc["n_flips_ci95"][1], 2.0)
         json.dumps(study)  # JSON-native without a default converter
+
+    def test_null_saturation_excludes_saturated_flip(self):
+        # A4: lift object_hue's random floor to ~0.95 (>= 0.90 at both flip
+        # endpoints) while keeping its G pattern; the factor still flips in the
+        # primary count but is dropped from the saturation-excluded variant
+        tmp2 = tempfile.mkdtemp()
+        try:
+            rng = np.random.default_rng(4)
+            trained, random, perm, projector = make_stacks(rng)
+            random[:, 2, :] += 0.45                       # floor 0.5 -> ~0.95
+            trained[:, 2, :] += 0.45                      # keep per-seed G unchanged
+            d = write_raw(tmp2, condition="sat", strength="strong",
+                          trained=trained, random=random, perm=perm, projector=projector,
+                          trained_seeds=range(10), random_seeds=range(10))
+            res = analyze_cell(load_cell(d), n_boot=N_BOOT)
+
+            ns = res["null_saturation"]
+            self.assertEqual(ns["saturated_factors_flip"], ["object_hue"])
+            self.assertTrue(all(ns["saturated_by_rung"]["object_hue"]))
+            self.assertFalse(any(ns["saturated_by_rung"]["floor_hue"]))
+
+            rep = res["report"]
+            self.assertEqual(rep["flips_primary"]["flipped_factors"], ["object_hue"])
+            excl = rep["flips_primary_excl_null_saturated"]
+            self.assertEqual(excl["flipped_factors"], [])
+            self.assertEqual(excl["excluded_null_saturated"], ["object_hue"])
+            self.assertEqual(
+                res["flip_uncertainty"]["fixed_0.05_excl_null_saturated"]["n_flips_ci95"],
+                [0.0, 0.0])
+            self.assertNotIn(
+                "object_hue",
+                res["flip_uncertainty"]["primary_excl_null_saturated"]
+                ["per_factor_flip_fraction"])
+
+            study = assemble([res])
+            hl = study["headline_flip_count"]
+            self.assertEqual(hl["primary"]["n_flips"], 1)
+            self.assertEqual(hl["primary_excl_null_saturated"]["n_flips"], 0)
+            row = next(t for t in study["verdict_table"]
+                       if t["factor"] == "object_hue" and t["cell"] == "sat_strong")
+            self.assertTrue(row["null_saturated"])
+            self.assertTrue(any("null-saturated" in n for n in study["notes"]))
+            json.dumps(study)
+        finally:
+            shutil.rmtree(tmp2)
 
     def test_assemble_widening_two_strengths(self):
         tmp2 = tempfile.mkdtemp()

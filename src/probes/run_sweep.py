@@ -110,21 +110,55 @@ def run(args) -> dict:
         print(f"[sweep] WARNING: only {len(args.random_seed)} random seeds "
               f"(<10 = epsilon_G under-powered, prereg/D020).")
 
+    # --- optional per-seed row cache (resume a session-killed probe) ---------
+    # Each encoder is already probed independently and concatenated, so caching a
+    # seed's [1,F,R] rows and reloading them is bit-equivalent to a single run.
+    cache_dir = (Path(args.out_root) / f"{args.condition}_{args.strength}" / "_cache"
+                 if args.resume else None)
+    if cache_dir is not None:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def _cache_load(name):
+        if cache_dir is None:
+            return None
+        p = cache_dir / f"{name}.npz"
+        if not p.exists():
+            return None
+        try:
+            return dict(np.load(p, allow_pickle=False))
+        except Exception:
+            p.unlink(missing_ok=True)  # truncated/corrupt cache -> recompute
+            return None
+
+    def _cache_save(name, **arrays):
+        if cache_dir is not None:
+            np.savez(cache_dir / f"{name}.npz", **arrays)
+
     # --- trained encoders: h, permuted-label, and projector stacks (one at a time) ---
     trained_rows, perm_rows, proj_rows, trained_seeds = [], [], [], []
     proj_out_dim = None
     for ck in enc_paths:
         seed = _seed_from_path(ck)
+        cached = _cache_load(f"trained_seed{seed}")
+        if cached is not None:
+            trained_rows.append(cached["trained"]); perm_rows.append(cached["perm"])
+            proj_rows.append(cached["projector"]); proj_out_dim = int(cached["proj_out_dim"])
+            trained_seeds.append(seed)
+            print(f"[sweep]   trained seed {seed}: loaded from cache")
+            continue
         backbone, projector = load_backbone_projector(ck, device)
         proj_out_dim = projector.out_dim
         fh = feats_for(backbone)
-        trained_rows.append(stack_runs([(fh, seed)], **pkw))
-        perm_rows.append(stack_runs([(fh, seed)], permute=True, **pkw))
+        tr = stack_runs([(fh, seed)], **pkw)
+        pr = stack_runs([(fh, seed)], permute=True, **pkw)
         del fh
         fp = proj_feats_for(backbone, projector)
-        proj_rows.append(stack_runs([(fp, seed)], **pkw))
+        pj = stack_runs([(fp, seed)], **pkw)
         del fp, backbone, projector
+        trained_rows.append(tr); perm_rows.append(pr); proj_rows.append(pj)
         trained_seeds.append(seed)
+        _cache_save(f"trained_seed{seed}", trained=tr, perm=pr, projector=pj,
+                    proj_out_dim=np.int64(proj_out_dim))
         print(f"[sweep]   trained seed {seed}: probed h + projector")
 
     trained_stack = np.concatenate(trained_rows)
@@ -134,10 +168,17 @@ def run(args) -> dict:
     # --- random-encoder floor (defines G / epsilon_G) ---
     random_rows = []
     for rs in args.random_seed:
+        cached = _cache_load(f"random_seed{rs}")
+        if cached is not None:
+            random_rows.append(cached["random"])
+            print(f"[sweep]   random seed {rs}: loaded from cache")
+            continue
         bb = build_random_encoder(rs, device)
         fr = feats_for(bb)
-        random_rows.append(stack_runs([(fr, rs)], **pkw))
+        rr = stack_runs([(fr, rs)], **pkw)
         del fr, bb
+        random_rows.append(rr)
+        _cache_save(f"random_seed{rs}", random=rr)
         print(f"[sweep]   random seed {rs}: probed h")
     random_stack = np.concatenate(random_rows)
 
@@ -216,6 +257,9 @@ def _main() -> None:
     ap.add_argument("--subsample", type=int, default=0, help="cap probe_train (0 = full/fixed)")
     ap.add_argument("--in-memory", action="store_true")
     ap.add_argument("--out-root", default="results/probes")
+    ap.add_argument("--resume", action="store_true",
+                    help="cache per-seed probe rows under <out>/_cache and reload them "
+                         "on re-run (resume a session-killed probe)")
     run(ap.parse_args())
 
 

@@ -105,15 +105,16 @@ def build_augmentation(
         )
 
     if condition == "orientation":
-        # Target: orientation. Rotate only. Strong spans the full circle to match
-        # dSprites' full-rotation orientation factor; weak is a limited arc.
-        degrees = 15 if weak else 180
+        # Target: orientation. Rotate only, within a bounded arc matched to the
+        # Shapes3D orientation factor's +/-30 deg range (prereg A3); weak is half.
+        degrees = 15 if weak else 30
         return T.Compose([T.RandomRotation(degrees, fill=0), T.ToTensor()])
 
     if condition == "scale":
         # Target: scale. Isotropic zoom only (no translation/rotation), so the
-        # views differ solely in object size.
-        scale_range = (0.9, 1.1) if weak else (0.6, 1.4)
+        # views differ solely in object size. Strong spans the Shapes3D scale
+        # factor's own [0.75, 1.25] range (aug beyond it destroys shape).
+        scale_range = (0.9, 1.1) if weak else (0.75, 1.25)
         return T.Compose(
             [
                 T.RandomAffine(degrees=0, scale=scale_range, fill=0),

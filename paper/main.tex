@@ -105,6 +105,15 @@ Placeholder abstract.
 % G(F,c) > eps_G and S <= 0  => inconclusive / probe-driven (dead zone)
 % eps_G primary: data-derived per-factor (95% CI bound, random-vs-random
 % encoder null); eps_G = 0.05 normalized is a sensitivity analysis only.
+%
+% SEMANTICS DISCIPLINE (enforce everywhere in prose/tables): eps_G is a
+% DETECTION threshold — "G <= eps_G" reads as "no detectable encoder gain
+% over the random-encoder null", NEVER as "the factor is absent from the
+% representation". Absolute R levels are co-reported next to every verdict
+% (prereg A1c), and readouts whose random floor is near ceiling carry a
+% null-saturated flag with a saturation-excluded flip count co-reported
+% (prereg A4a). Any sentence quoting the headline flip count must quote the
+% primary and saturation-excluded variants together.
 
 % ============================================================
 \section{Method}
@@ -116,22 +125,26 @@ Placeholder abstract.
 % results separately (Cosentino-style axis, H4).
 
 \subsection{Augmentation conditions}
-% Table: Color (hue/color jitter) / Position (crop-translation) /
-% Orientation (rotation) / Scale (random-resized-crop) / Control-aug
-% (minimal), each at 2 strengths (weak, strong).
+% Realized grid (prereg Amendment A1): the STRONG cross-section only —
+% Color / Position / Orientation / Scale / Control-aug at strong strength,
+% >=12 seeds per cell; the weak axis is deferred to a follow-up study.
+% Arm -> perturbed-factor map (prereg A4d): each augmentation perturbs a
+% SET of factors; every "the augmentation targeting factor F" claim is read
+% against this table.
 \begin{table}[H]
 \centering
-\caption{Augmentation conditions and targeted factors.}
+\caption{Augmentation conditions: targeted factors and the full set of
+factors each transform perturbs (prereg A4d).}
 \label{tab:conditions}
-\begin{tabular}{lll}
+\begin{tabular}{llll}
 \toprule
-Condition & Augmentation & Targeted factor \\
+Condition & Augmentation & Targeted factor(s) & Also perturbs \\
 \midrule
-Color       & hue/color jitter          & object (\,+wall/floor\,) hue \\
-Position    & random crop / translation & x, y position \\
-Orientation & rotation                  & orientation \\
-Scale       & random resized crop       & scale \\
-Control-aug & minimal / none            & --- (baseline) \\
+Color       & hue/color jitter          & floor/wall/object hue & --- \\
+Position    & random crop / translation & x, y position         & scale, aspect \\
+Orientation & rotation                  & orientation           & apparent scale \\
+Scale       & random resized crop       & scale                 & position \\
+Control-aug & minimal (crop-only)       & --- (baseline)        & position, scale \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -149,10 +162,15 @@ Control-aug & minimal / none            & --- (baseline) \\
 % gate (downstream linear-probe accuracy) before any invariance claim.
 
 \subsection{Experimental design}
-% Factorial sweep: factors (5-6) x conditions (4+control) x strengths (2)
-% x probe capacities (4) x seeds (>=10). Seed controls both encoder and
-% probe init. Probe-train size held fixed across the capacity ladder;
-% probe-train/val/test split; regularization tuned on val only.
+% Realized factorial sweep (A1): factors (5-6) x conditions (4+control) x
+% strong strength x probe capacities (4) x seeds (12). Seed controls both
+% encoder and probe init. Probe-build pins (prereg A4c): per-dimension
+% standardization on probe-train stats; identical training protocol at every
+% rung (Adam lr 1e-3, batch 4096, 100 epochs, weight-decay grid tuned on
+% val — tuning budget rung-uniform by construction); splits 40k/10k/30k,
+% split_seed fixed study-wide; probe-test-only reporting.
+% Diagnostics outside all decision rules: raw-pixel reference ladder (A4b),
+% null-headroom flags (A4a), supervised-reference ceiling.
 
 % ============================================================
 \section{Hypotheses}
@@ -183,20 +201,52 @@ Control-aug & minimal / none            & --- (baseline) \\
 
 \subsection{Encoder-quality gate}
 \subsection{Per-factor recoverability-vs-capacity curves}
+% Co-plot absolute levels: R(trained), R(random floor), R(projector) (A1c)
+% and the raw-pixel reference ladder (A4b) so floor height is always visible.
 \subsection{Encoder gain G and the capacity gap $\Delta_G$}
 \subsection{Verdict-stability flip count}
+% Quote primary AND saturation-excluded counts together (A4a), each with the
+% A1c seed-bootstrap interval, for both eps_G variants; list null-saturated
+% readouts explicitly.
 \subsection{Encoder vs.\ projector (H4)}
+% Descriptive sign only (A1): single-strength grid; no confirm/refute claim.
 
 % ============================================================
 \section{Discussion}
 \label{sec:discussion}
 \subsection{Interpretation}
 \subsection{Implications for augmentation choice}
+\subsection{Scope of claims}
+% CLAIMS THE PAPER MAKES (each scoped to the realized grid): statements of
+% the form "factor F is/is not recoverable from the frozen encoder at
+% capacity c above the random-encoder null, under condition X at strong
+% strength, on dataset D" — nothing stronger.
+% CLAIMS THE PAPER MUST NOT MAKE:
+%   - no generalization to other SSL objectives (SimCLR only), other
+%     augmentation strengths (strong only, A1), real data (synthetic only;
+%     the bounded real-data check, if unrun, is omitted, not approximated),
+%     larger scales (small backbone, 64x64), or unstudied factors;
+%   - no reading of "G <= eps_G" as "information absent" (see Sec. 3
+%     semantics discipline; null-saturated readouts flagged, A4a);
+%   - no attribution of the headline contrast to factor identity alone:
+%     object hue lives on Shapes3D, position on dSprites, so the contrast
+%     is also a dataset contrast (A4d); H2's confirmatory within-type pairs
+%     are within-cell and unaffected;
+%   - no theoretical capacity claim for the ladder: it is four probe
+%     families downstream users actually deploy, reported by param count;
+%     engage Lee & Kondor 2026 here (writing-phase note);
+%   - H2/H4 nulls are reported as "not detected at n=12 after Holm",
+%     never as evidence of homogeneity / absence of localization.
 \subsection{Limitations}
 % Threats to validity per ResearchOverview.md \S11: probe overfitting
 % (mitigated by control + held-out test), synthetic-vs-real scope,
 % projector confound, encoder undertraining, capacity/sample-size
 % confound (probe-train size fixed).
+% Add: null-headroom compression of G where the random floor nears ceiling
+% (A4a diagnostic + saturation-excluded flip count); single-strength grid
+% (A1) => H4 descriptive; small-scale SimCLR (batch size bounds the NT-Xent
+% negative pool) => report batch/tau/epochs per cell; Wilcoxon power at
+% n=12 after Holm (pre-registered caveat + D025 calibration).
 
 \section{Conclusion}
 \label{sec:conclusion}
