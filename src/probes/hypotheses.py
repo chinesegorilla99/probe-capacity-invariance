@@ -78,10 +78,30 @@ TARGETED_FACTORS = {
     "control": (),
 }
 
-# Realized grid (prereg Amendment A1: the strong cross-section) — used only to
-# mark the assembled table provisional while cells are missing.
+# Realized grid (prereg Amendment A1: the strong cross-section; A5 (2026-07-28)
+# dropped orientation_strong — 2D-rotation augmentation is construct-invalid for
+# the Shapes3D azimuth factor and yields no §5-gate-passing encoder) — used only
+# to mark the assembled table provisional while cells are missing.
 EXPECTED_CELLS = ("color_strong", "position_strong", "control_strong",
-                  "orientation_strong", "scale_strong")
+                  "scale_strong")
+
+# Pre-registered MAXIMAL strong-slice family and the pre-verdict exclusions applied
+# to it, disclosed (assemble -> "holm_family") so the Holm correction is seen to span
+# the REALIZED family BY DESIGN — cells removed on a shape-gate / construct basis
+# before any verdict — not by post-hoc pruning of inconvenient cells. A shrinking
+# family that lifts power on survivors is the exact appearance this disclosure exists
+# to defuse; the correction is over tests actually run, and every drop is logged here.
+DESIGNED_STRONG_CELLS = ("color_strong", "position_strong", "orientation_strong",
+                         "scale_strong", "control_strong")
+PRE_VERDICT_EXCLUSIONS = {
+    "orientation_strong": "Amendment A5 (2026-07-28): 2D in-plane rotation (SO(2)) is "
+        "construct-invalid for the Shapes3D 3D-azimuth (SO(3)) factor and drives the "
+        "shape anchor below the random-encoder floor, so no §5-gate-passing encoder "
+        "exists (arm-level exclusion, pre-verdict, gate orthogonal to H1-H4).",
+    "(dsprites, orientation)": "Amendment A3 (2026-07-15): non-identifiable readout for "
+        "symmetric shapes; excluded from confirmatory families everywhere, retained as "
+        "a tagged diagnostic (readout-level exclusion, pre-verdict).",
+}
 
 # Q16 / Amendment A3 (2026-07-15): non-identifiable readouts. dSprites orientation
 # is the full [0, 2*pi) circle and is unrecoverable for the symmetric shapes (square
@@ -141,6 +161,7 @@ class Cell:
     strength: str
     factors: tuple[FactorMeta, ...]
     rungs: tuple[str, ...]
+    rung_params: dict         # factor -> per-rung trainable-param count (capacity axis)
     trained: np.ndarray       # [n, F, R] gate-passed trained-encoder h
     perm: np.ndarray          # [n, F, R] trained encoder, permuted labels
     projector: np.ndarray     # [n, F, R] trained-encoder projector features
@@ -225,6 +246,7 @@ def load_cell(cell_dir: str | Path) -> Cell:
         strength=meta["strength"],
         factors=factors,
         rungs=rungs,
+        rung_params=dict(meta.get("rung_params_h", {})),
         trained=trained,
         perm=perm,
         projector=projector,
@@ -460,13 +482,27 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
             "subcase": subcase,
             "invariant_by_rung": [bool(b) for b in inv_point],
             "noise_band_by_rung": [bool(b) for b in band],
+            "null_saturated": bool(sat_flip[fi]),   # A6 gate input
         })
+    # A6 (2026-07-28): the null-saturation gate. A null-saturated factor (random
+    # floor near the ceiling of the normalized scale) satisfies G<=epsilon_G at every
+    # rung TRIVIALLY, for want of headroom — indistinguishable from genuine invariance.
+    # H3 asserts "genuine invariance", so such readouts are DROPPED from the confirmed
+    # set (the A3 vacuity logic applied to saturation instead of non-identifiability)
+    # and retained as a distinct, tagged diagnostic list. No other rule is touched.
+    h3_confirmed = [r["factor"] for r in h3_rows
+                    if r["invariant_all_rungs"] and not r["null_saturated"]]
+    h3_vacuous = [r["factor"] for r in h3_rows
+                  if r["invariant_all_rungs"] and r["null_saturated"]]
     h3 = {
-        "rule": "G(F,c) <= epsilon_G at EVERY rung for >=1 factor (§4 point boolean); "
-                "suppressed sub-case reported distinctly; CI-in-band co-reported (prereg §6 H3)",
+        "rule": "G(F,c) <= epsilon_G at EVERY rung for >=1 NON-null-saturated factor "
+                "(§4 point boolean; A6 gates out saturated readouts — vacuous for want "
+                "of floor headroom); suppressed sub-case reported distinctly; CI-in-band "
+                "co-reported (prereg §6 H3 + A6)",
         "per_factor": h3_rows,
-        "confirmed_factors": [r["factor"] for r in h3_rows if r["invariant_all_rungs"]],
-        "confirmed": any(r["invariant_all_rungs"] for r in h3_rows),
+        "confirmed_factors": h3_confirmed,
+        "invariant_but_null_saturated": h3_vacuous,   # A6: retained, NOT confirmatory
+        "confirmed": bool(h3_confirmed),
     }
 
     # H4 — encoder-vs-projector: per-seed G(enc)-G(proj) = R(h)-R(projector)
@@ -511,6 +547,30 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
             "excluded_null_saturated": sorted(set(fl["flipped_factors"]) & sat_names),
         }
 
+    # Capacity-axis validity (Lee & Kondor 2026): "G rises with capacity" (H1) is
+    # only well-posed if the ladder is a MONOTONE capacity axis. Report the frozen
+    # capacity measure (trainable param count per rung, prereg A4c(3)) and verify it
+    # is non-decreasing across rungs for every factor, so the x-axis is not asserted
+    # but checked. Effective DOF remains a probe-build diagnostic (prereg §8 / A6).
+    cap_rows, mono_all = [], True
+    for fac in cell.factors:
+        p = cell.rung_params.get(fac.name)
+        if not p:
+            continue
+        nondec = all(b >= a for a, b in zip(p, p[1:]))
+        mono_all = mono_all and nondec
+        cap_rows.append({"factor": fac.name, "params_by_rung": [int(x) for x in p],
+                         "monotone_nondecreasing": bool(nondec)})
+    capacity_axis = {
+        "measure": "trainable parameter count per (rung, factor) (prereg A4c(3))",
+        "rungs": list(cell.rungs),
+        "per_factor": cap_rows,
+        "monotone_all_factors": bool(mono_all) if cap_rows else None,
+        "note": "param-count monotonicity is the frozen capacity-axis check; the "
+                "ladder's approximate function-class nesting is argued against Lee & "
+                "Kondor 2026 in the methods; effective DOF is a co-reported diagnostic",
+    }
+
     return {
         "cell": cell.name,
         "dataset": cell.dataset,
@@ -524,6 +584,7 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
         "report": report,
         "levels": levels,
         "null_saturation": null_sat,
+        "capacity_axis": capacity_axis,
         "flip_uncertainty": flip_unc,
         "epsilon_diagnostics": eps_diag,
         "h1": h1,
@@ -675,20 +736,37 @@ def assemble(results: list[dict], alpha: float = ALPHA) -> dict:
                 "CI-excludes-0 co-reported per pair",
     }
 
-    # H3 — existence across the ladder, per cell.
+    # H3 — existence across the ladder, per cell. A6 (2026-07-28): a null-saturated
+    # readout's G<=eps is vacuous (no floor headroom), so it cannot source a
+    # "genuine invariance" verdict — dropped from the confirmed set, kept as a tagged
+    # diagnostic list. Composes with the Q16/A3 non-identifiability exclusion.
     h3_conf = [[r["cell"], row["factor"], row["subcase"]] for r in results
                for row in r["h3"]["per_factor"]
-               if row["invariant_all_rungs"] and not row.get("diagnostic_only")]  # Q16 / A3
+               if row["invariant_all_rungs"] and not row.get("diagnostic_only")  # Q16 / A3
+               and not row.get("null_saturated")]                               # A6
+    h3_vacuous = [[r["cell"], row["factor"]] for r in results
+                  for row in r["h3"]["per_factor"]
+                  if row["invariant_all_rungs"] and row.get("null_saturated")
+                  and not row.get("diagnostic_only")]
     h3 = {
-        "statement": "some factor stays epsilon_G-invariant at every capacity",
+        "statement": "some NON-null-saturated factor stays epsilon_G-invariant at every capacity",
         "confirmed_cells_factors": h3_conf,
+        "invariant_but_null_saturated": h3_vacuous,   # A6: retained, non-confirmatory
         "confirmed_fixed_0.05": [[r["cell"], row["factor"]] for r in results
                                  for row in r["h3"]["per_factor"]
                                  if row["invariant_all_rungs_fixed_0.05"]
-                                 and not row.get("diagnostic_only")],
+                                 and not row.get("diagnostic_only")
+                                 and not row.get("null_saturated")],
         "status": "confirmed" if h3_conf else "refuted",
-        "note": "suppressed (G<0 everywhere) and noise-band sub-cases reported distinctly",
+        "note": "A6 null-saturation gate applied; suppressed (G<0 everywhere) and "
+                "noise-band sub-cases reported distinctly; invariant-but-saturated "
+                "readouts listed separately as non-confirmatory diagnostics",
     }
+    if h3_vacuous:
+        notes.append(f"H3 (A6): {len(h3_vacuous)} invariant readout(s) "
+                     f"{[f'{c}:{f}' for c, f in h3_vacuous]} are NULL-SATURATED and "
+                     "EXCLUDED from the genuine-invariance verdict as vacuous (random "
+                     "floor near ceiling; no headroom) — retained as diagnostics")
 
     # H4 — sign component (Holm across cells) + widening component.
     h4_rows = [dict(cell=r["cell"], **t) for r in results for t in r["h4"]["tests"]]
@@ -723,8 +801,11 @@ def assemble(results: list[dict], alpha: float = ALPHA) -> dict:
                       "so H4 is neither confirmed nor refuted")
 
     # Headline: verdict-stability flip count over (factor, condition) cells.
-    # A4: the saturation-excluded variants are co-reported; any headline sentence
-    # quoting the flip count must quote both.
+    # A4: the saturation-excluded variants are co-reported. A6 (2026-07-28): the
+    # variant QUOTED IN CLAIMS is the null-saturation-excluded one — a flip on a
+    # saturated readout cannot distinguish absence from lack of floor headroom, so
+    # counting it would smuggle a measurement floor into the headline number. The
+    # all-factor primary and the fixed-0.05 sensitivity remain co-reported.
     def flips(key):
         rows = [{"cell": r["cell"], "factor": f} for r in results
                 for f in r["report"].get(key, {}).get("flipped_factors", [])]
@@ -735,6 +816,13 @@ def assemble(results: list[dict], alpha: float = ALPHA) -> dict:
         "fixed_0.05": flips("flips_fixed_0.05"),
         "primary_excl_null_saturated": flips("flips_primary_excl_null_saturated"),
         "fixed_0.05_excl_null_saturated": flips("flips_fixed_0.05_excl_null_saturated"),
+    }
+    headline["headline_for_claims"] = {
+        "variant": "primary_excl_null_saturated",
+        "n_flips": headline["primary_excl_null_saturated"]["n_flips"],
+        "note": "A6: the flip count quoted in prose is the null-saturation-excluded "
+                "primary variant; the all-factor primary and fixed-0.05 sensitivity "
+                "are co-reported (A4). Quote them together, never the primary alone.",
     }
 
     # Study-level flip uncertainty (A1 §c): cells resample independently, the
@@ -775,11 +863,28 @@ def assemble(results: list[dict], alpha: float = ALPHA) -> dict:
                 "null_saturated": fname in satset,
             })
 
+    # Holm-family disclosure (defuses "the correction shrank as arms were dropped"):
+    # the maximal pre-registered strong-slice family, which cells realized, and every
+    # pre-verdict exclusion with its reason. Holm corrects over the REALIZED family
+    # (tests actually run); this block shows the realization was by design, pre-verdict.
+    holm_family = {
+        "designed_strong_cells": list(DESIGNED_STRONG_CELLS),
+        "realized_cells": present,
+        "missing_expected_cells": missing,
+        "pre_verdict_exclusions": PRE_VERDICT_EXCLUSIONS,
+        "note": "Holm is applied over the realized factor x condition family; every "
+                "cell/readout removed from it was removed pre-verdict on a shape-gate "
+                "or construct/identifiability basis (logged above), never to lift power "
+                "on survivors — a disclosed consequence of dropping untrustworthy "
+                "cells, not a post-hoc power adjustment.",
+    }
+
     return {
         "alpha": alpha,
         "cells": present,
         "missing_expected_cells": missing,
         "provisional": provisional,
+        "holm_family": holm_family,
         "headline_flip_count": headline,
         "verdict_table": table,
         "headline_contrast": _headline_contrast(table),

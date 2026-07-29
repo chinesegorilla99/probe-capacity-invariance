@@ -154,6 +154,12 @@ Control-aug & minimal (crop-only)       & --- (baseline)        & position, scal
 % (4) MLP 2-hidden. Monotone capacity; capacity reported as an explicit
 % measure (param count / effective DOF) per rung (deferred to probe-build,
 % engaging Lee \& Kondor 2026 at writing time).
+% Capacity-axis validity (prereg A6): "G rises with capacity" (H1) is only
+% well-posed if the ladder is a MONOTONE capacity axis, so the frozen measure
+% (per-rung trainable-param count) is CHECKED, not asserted (analyze_cell ->
+% capacity_axis, per-factor non-decreasing verdict); argue the four rungs'
+% approximate function-class nesting against Lee & Kondor's principled probe
+% hierarchy here; effective DOF co-reported as a probe-build diagnostic.
 
 \subsection{Controls}
 % Random-LABEL control (defines S); random-ENCODER control, matched
@@ -182,6 +188,12 @@ Control-aug & minimal (crop-only)       & --- (baseline)        & position, scal
   \item \textbf{H1 (capacity dependence).}
   \item \textbf{H2 (heterogeneity).}
   \item \textbf{H3 (genuine invariance via control).}
+  % prereg A6 null-saturation GATE: H3 confirms iff >=1 NON-null-saturated factor
+  % stays G <= eps_G at every rung. A null-saturated readout (random floor near
+  % ceiling) satisfies G <= eps_G trivially for want of headroom, so it is EXCLUDED
+  % from the genuine-invariance verdict (A3 vacuity logic applied to saturation) and
+  % retained as a tagged diagnostic (invariant_but_null_saturated). State this gate
+  % where H3 is defined -- it is what prevents H3 confirming off a measurement floor.
   \item \textbf{H4 (encoder-vs-projector localization).}
 \end{itemize}
 
@@ -192,6 +204,12 @@ Control-aug & minimal (crop-only)       & --- (baseline)        & position, scal
 % gates); effect sizes with CIs; Wilcoxon signed-rank for paired
 % comparisons; Holm correction across the factor x condition family;
 % report per-cell, never collapse to a single average (prereg.md \S7).
+% Maximal-Holm-family disclosure (prereg A6): report the pre-registered maximal
+% strong-slice family (DESIGNED_STRONG_CELLS), the realized cells, and every
+% pre-verdict exclusion with its reason (holm_family) -- so the realized-family
+% correction is seen to shrink BY DESIGN (shape-gate / construct / identifiability
+% removals, all pre-verdict), not as post-hoc power gaming. Wilcoxon power at
+% n=12 after Holm: nulls reported as non-detection (D025), never as homogeneity.
 
 % ============================================================
 \section{Results}
@@ -208,6 +226,10 @@ Control-aug & minimal (crop-only)       & --- (baseline)        & position, scal
 % Quote primary AND saturation-excluded counts together (A4a), each with the
 % A1c seed-bootstrap interval, for both eps_G variants; list null-saturated
 % readouts explicitly.
+% prereg A6: the count QUOTED IN CLAIMS is the null-saturation-excluded variant
+% (headline_for_claims); a flip on a saturated readout cannot distinguish absence
+% from lack of floor headroom. The all-factor primary and fixed-0.05 remain
+% co-reported; never quote the primary alone as the headline.
 \subsection{Encoder vs.\ projector (H4)}
 % Descriptive sign only (A1): single-strength grid; no confirm/refute claim.
 

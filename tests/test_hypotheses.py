@@ -361,6 +361,70 @@ class TestHypotheses(unittest.TestCase):
         finally:
             shutil.rmtree(tmp2)
 
+    def test_h3_null_saturation_gate(self):
+        # A6: a NULL (invariant) factor whose random floor sits near ceiling
+        # satisfies G<=eps trivially for want of headroom — it must be dropped from
+        # H3's genuine-invariance verdict and retained as a tagged diagnostic, while
+        # the suppressed (wall_hue) and unsaturated-null (orientation) factors still
+        # confirm H3.
+        tmp2 = tempfile.mkdtemp()
+        try:
+            rng = np.random.default_rng(11)
+            trained, random, perm, projector = make_stacks(rng)
+            random[:, 0, :] += 0.45    # floor_hue floor 0.5 -> ~0.95 (saturated)
+            trained[:, 0, :] += 0.45   # keep per-seed G ~ 0 (still invariant)
+            d = write_raw(tmp2, condition="satnull", strength="strong",
+                          trained=trained, random=random, perm=perm, projector=projector,
+                          trained_seeds=range(10), random_seeds=range(10))
+            res = analyze_cell(load_cell(d), n_boot=N_BOOT)
+
+            by_factor = {r["factor"]: r for r in res["h3"]["per_factor"]}
+            self.assertTrue(by_factor["floor_hue"]["invariant_all_rungs"])
+            self.assertTrue(by_factor["floor_hue"]["null_saturated"])
+            self.assertNotIn("floor_hue", res["h3"]["confirmed_factors"])
+            self.assertIn("floor_hue", res["h3"]["invariant_but_null_saturated"])
+            # the suppressed factor (G=-0.3, floor unsaturated) still confirms H3
+            self.assertIn("wall_hue", res["h3"]["confirmed_factors"])
+            self.assertTrue(res["h3"]["confirmed"])
+
+            study = assemble([res])
+            h3 = study["hypotheses"]["H3"]
+            self.assertNotIn("floor_hue", {f for _, f, _ in h3["confirmed_cells_factors"]})
+            self.assertIn(["satnull_strong", "floor_hue"], h3["invariant_but_null_saturated"])
+            self.assertEqual(h3["status"], "confirmed")
+            self.assertTrue(any("NULL-SATURATED" in n for n in study["notes"]))
+            json.dumps(study)
+        finally:
+            shutil.rmtree(tmp2)
+
+    def test_capacity_axis_monotone(self):
+        # Lee & Kondor 2026: the ladder must be a monotone capacity axis. The frozen
+        # measure (per-rung trainable-param count) is checked, not asserted.
+        ca = self.res["capacity_axis"]
+        self.assertTrue(ca["monotone_all_factors"])
+        self.assertEqual(ca["rungs"], RUNGS)
+        row = next(r for r in ca["per_factor"] if r["factor"] == "object_hue")
+        self.assertEqual(row["params_by_rung"], [513, 32897, 131585, 164353])
+        self.assertTrue(row["monotone_nondecreasing"])
+
+    def test_headline_for_claims_is_saturation_excluded(self):
+        # A6: the flip count quoted in claims is the null-saturation-excluded variant.
+        study = assemble([self.res])
+        hl = study["headline_flip_count"]
+        hfc = hl["headline_for_claims"]
+        self.assertEqual(hfc["variant"], "primary_excl_null_saturated")
+        self.assertEqual(hfc["n_flips"], hl["primary_excl_null_saturated"]["n_flips"])
+
+    def test_holm_family_disclosure(self):
+        # The maximal designed family is disclosed with pre-verdict exclusions, so the
+        # realized-family Holm correction is not read as post-hoc power gaming.
+        study = assemble([self.res])
+        hf = study["holm_family"]
+        self.assertIn("orientation_strong", hf["designed_strong_cells"])
+        self.assertIn("orientation_strong", hf["pre_verdict_exclusions"])
+        self.assertIn("(dsprites, orientation)", hf["pre_verdict_exclusions"])
+        self.assertEqual(hf["realized_cells"], ["color_strong"])
+
     def test_assemble_widening_two_strengths(self):
         tmp2 = tempfile.mkdtemp()
         try:

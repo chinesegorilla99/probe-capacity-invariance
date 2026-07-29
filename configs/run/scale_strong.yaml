@@ -1,6 +1,7 @@
-# Scale arm (Shapes3D) — isotropic zoom only, STRONG (0.6–1.4×). Targets the
-# scale factor. ~50-epoch cut (verify on the first encoder's quality gate
-# before scaling to all seeds). Train 12 seeds via --set run.seed=N.
+# Scale arm (Shapes3D) — isotropic zoom only, STRONG (0.75–1.25×, bounded to the
+# scale factor's own range per D027). Targets the scale factor. ~50-epoch cut
+# (verify on the first encoder's quality gate before scaling to all seeds).
+# Train 12 seeds via --set run.seed=N.
 _base_: ../base.yaml
 
 data:
