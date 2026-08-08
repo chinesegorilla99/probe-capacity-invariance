@@ -45,3 +45,52 @@ def make_splits(
         out[name] = np.sort(perm[start : start + k])
         start += k
     return out
+
+
+def make_value_holdout_splits(
+    labels: np.ndarray,
+    factor_index: int,
+    *,
+    base: dict[str, np.ndarray],
+    n_holdout: int = 2,
+    split_seed: int = 1234,
+) -> dict[str, np.ndarray]:
+    """Extrapolation split for ONE factor: probe-test holds out whole factor VALUES.
+
+    Both datasets are complete factorial grids split by random index, so the
+    default probe-test is dense lattice interpolation — an untrained CNN plus a
+    high-capacity probe already solves it, which saturates the random-encoder
+    floor and leaves G no headroom (prereg A8 §c). Here ``n_holdout`` of the
+    factor's discrete values are withheld from probe-train/probe-val entirely and
+    form probe-test, so recoverability must EXTRAPOLATE to unseen values.
+
+    Args:
+        labels: ``(n_total, K)`` factor matrix, dataset order.
+        factor_index: which factor column defines the held-out values.
+        base: the study's interpolation splits from :func:`make_splits`; the
+            returned splits are subsets of these, so encoder_train is never touched.
+        n_holdout: how many of the factor's values to withhold.
+        split_seed: fixed across the study; chooses which values are held out.
+
+    Returns probe_train / probe_val / probe_test index arrays. Held-out values are
+    recorded under the ``"_holdout_values"`` key.
+    """
+    col = np.asarray(labels)[:, factor_index]
+    uniq = np.unique(col)
+    if not 0 < n_holdout < len(uniq):
+        raise ValueError(
+            f"n_holdout={n_holdout} must be in (0, {len(uniq)}) for factor {factor_index}"
+        )
+    rng = np.random.default_rng(split_seed + factor_index)
+    held = np.sort(rng.choice(uniq, size=n_holdout, replace=False))
+    is_held = np.isin(col, held)
+
+    out = {
+        "probe_train": np.sort(base["probe_train"][~is_held[base["probe_train"]]]),
+        "probe_val": np.sort(base["probe_val"][~is_held[base["probe_val"]]]),
+        "probe_test": np.sort(base["probe_test"][is_held[base["probe_test"]]]),
+        "_holdout_values": held,
+    }
+    if len(out["probe_test"]) == 0 or len(out["probe_train"]) == 0:
+        raise ValueError(f"empty extrapolation split for factor {factor_index}")
+    return out

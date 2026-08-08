@@ -20,7 +20,8 @@ import torchvision.transforms as T
 
 IMAGE_SIZE = 64
 
-CONDITIONS = ("standard", "control", "color", "position", "orientation", "scale")
+CONDITIONS = ("standard", "control", "color", "position", "orientation", "scale",
+              "scale_recipe")
 STRENGTHS = ("weak", "strong")
 
 
@@ -118,6 +119,24 @@ def build_augmentation(
         return T.Compose(
             [
                 T.RandomAffine(degrees=0, scale=scale_range, fill=0),
+                T.ToTensor(),
+            ]
+        )
+
+    if condition == "scale_recipe":
+        # EXPLORATORY (prereg A7 §c) — never a confirmatory cell. The `scale` arm
+        # composed with the canonical photometric base, to discriminate the two
+        # live explanations for its shape-anchor collapse: an augmentation-factor
+        # construct mismatch, versus a colour shortcut left open by a
+        # single-augmentation recipe on a hue-dominated dataset. If the anchor
+        # recovers here, the collapse was the recipe, not the transform.
+        scale_range = (0.9, 1.1) if weak else (0.75, 1.25)
+        jitter = T.ColorJitter(0.4, 0.4, 0.4, 0.1)
+        return T.Compose(
+            [
+                T.RandomAffine(degrees=0, scale=scale_range, fill=0),
+                T.RandomApply([jitter], p=0.8),
+                T.RandomGrayscale(p=0.2),
                 T.ToTensor(),
             ]
         )

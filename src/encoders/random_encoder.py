@@ -28,3 +28,33 @@ def build_random_encoder(seed: int, device: torch.device | None = None) -> ResNe
     if device is None:
         device = pick_device()
     return model.to(device)
+
+
+def build_random_backbone_projector(
+    seed: int,
+    device: torch.device | None = None,
+    *,
+    hidden_dim: int = 512,
+    out_dim: int = 128,
+):
+    """Untrained ``(backbone, projector)`` at ``seed`` — the H4 floor (prereg A8 §d).
+
+    H4 is defined as paired ``G(encoder) - G(projector)``, so the projector axis
+    needs its own matched untrained baseline. Without one the statistic reduces to
+    a raw level difference between a 512-d and a 128-d space and is confounded by
+    dimensionality. Both heads are drawn from one seeded stream so the pair matches
+    the trained checkpoint's construction order.
+    """
+    from .projector import MLPProjector
+
+    g_cpu = torch.random.get_rng_state()
+    try:
+        torch.manual_seed(seed)
+        backbone = ResNet18CIFAR()
+        projector = MLPProjector(in_dim=512, hidden_dim=hidden_dim, out_dim=out_dim)
+    finally:
+        torch.random.set_rng_state(g_cpu)
+
+    if device is None:
+        device = pick_device()
+    return backbone.eval().to(device), projector.eval().to(device)

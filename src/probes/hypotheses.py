@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -82,8 +83,7 @@ TARGETED_FACTORS = {
 # dropped orientation_strong — 2D-rotation augmentation is construct-invalid for
 # the Shapes3D azimuth factor and yields no §5-gate-passing encoder) — used only
 # to mark the assembled table provisional while cells are missing.
-EXPECTED_CELLS = ("color_strong", "position_strong", "control_strong",
-                  "scale_strong")
+EXPECTED_CELLS = ("color_strong", "position_strong", "control_strong")
 
 # Pre-registered MAXIMAL strong-slice family and the pre-verdict exclusions applied
 # to it, disclosed (assemble -> "holm_family") so the Holm correction is seen to span
@@ -94,6 +94,14 @@ EXPECTED_CELLS = ("color_strong", "position_strong", "control_strong",
 DESIGNED_STRONG_CELLS = ("color_strong", "position_strong", "orientation_strong",
                          "scale_strong", "control_strong")
 PRE_VERDICT_EXCLUSIONS = {
+    "scale_strong": "Amendment A7 (2026-08-07): the bounded (0.75, 1.25) retrain scored "
+        "0/12 on the §5 shape gate (linear-rung anchor 0.464-0.507 vs a 0.90 threshold "
+        "and a ~0.829 floor), which is the <6/12 branch of the rule pre-committed in "
+        "A6(d) on 2026-07-28, BEFORE the retrain ran. The anchor deficit does not close "
+        "with probe capacity (0.483 -> 0.609 against a floor rising 0.829 -> 0.986), so "
+        "the gate reads FAIL-DESTROYED under A8(b) and the exclusion is gate-licensed "
+        "(arm-level, pre-verdict, gate orthogonal to H1-H4). A7(d) freezes the realized "
+        "grid at three cells: no further cell may be excluded for any reason.",
     "orientation_strong": "Amendment A5 (2026-07-28): 2D in-plane rotation (SO(2)) is "
         "construct-invalid for the Shapes3D 3D-azimuth (SO(3)) factor and drives the "
         "shape anchor below the random-encoder floor, so no §5-gate-passing encoder "
@@ -169,6 +177,9 @@ class Cell:
     trained_seeds: list[int]
     random_seeds: list[int]
     warnings: list[str]
+    # [S_r, F, R] untrained-projector floor; None for pre-A8 sweeps (H4 then falls
+    # back to the uncorrected level difference and records a warning).
+    random_projector: np.ndarray | None = None
 
 
 def load_cell(cell_dir: str | Path) -> Cell:
@@ -181,6 +192,8 @@ def load_cell(cell_dir: str | Path) -> Cell:
     if missing:
         raise ValueError(f"stacks.npz missing arrays {missing}")
     trained, random_full, perm, projector = (np.asarray(npz[k], float) for k in required)
+    random_projector = (np.asarray(npz["random_projector"], float)
+                        if "random_projector" in npz else None)   # A8 §d
 
     factors = tuple(
         FactorMeta(f["name"], f["kind"], f["index"], f["n_values"], bool(f.get("cyclic", False)))
@@ -254,6 +267,7 @@ def load_cell(cell_dir: str | Path) -> Cell:
         trained_seeds=trained_seeds,
         random_seeds=random_seeds,
         warnings=warnings,
+        random_projector=random_projector,
     )
 
 
@@ -351,7 +365,16 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
     # with instrument's common bootstrap rng -> shared draws across gates.
     g = cell.trained - cell.random_stats[:n]     # per-seed G [n,F,R]
     dg = g[:, :, -1] - g[:, :, 0]                # per-seed capacity gap [n,F]
-    d_h4 = cell.trained - cell.projector         # per-seed G(enc)-G(proj); floor cancels
+    # H4 = paired G(enc) - G(proj) (prereg §6). The floor does NOT cancel: h is 512-d
+    # and z is 128-d, so each axis needs its own untrained baseline (A8 §d).
+    if cell.random_projector is not None:
+        d_h4 = ((cell.trained - cell.random_stats[:n])
+                - (cell.projector - cell.random_projector[:n]))
+    else:
+        d_h4 = cell.trained - cell.projector
+        cell.warnings.append(
+            "H4 fallback: no random_projector stack (pre-A8 sweep), so G(enc)-G(proj) "
+            "is an uncorrected 512-d vs 128-d level difference — re-sweep to fix.")
 
     G = paired_gain(cell.trained, cell.random_stats, n_boot=n_boot)
     S = selectivity(cell.trained, cell.perm, n_boot=n_boot)
@@ -895,8 +918,36 @@ def assemble(results: list[dict], alpha: float = ALPHA) -> dict:
 
 # --- CLI ------------------------------------------------------------------------
 
+_STACKS_VARIANT = re.compile(r"^stacks(?: \(\d+\))?\.npz$")
+
+
 def discover_cells(root: str | Path) -> list[Path]:
-    return sorted(p.parent for p in Path(root).glob("*/stacks.npz"))
+    """Cell directories holding a canonical ``stacks.npz``.
+
+    A download-renamed artifact ("stacks (6).npz") does not match the contract
+    name, so a cell carrying only a renamed copy would be dropped SILENTLY —
+    turning a documented exclusion (A5/A7) into a filename accident, which is
+    exactly the appearance A6(c) exists to prevent. Raise instead: every exclusion
+    must be declared in PRE_VERDICT_EXCLUSIONS, never produced by a glob miss.
+    """
+    root = Path(root)
+    found = [p.parent for p in root.glob("*/stacks.npz")]
+    stray = (
+        {p.parent for p in root.glob("*/stacks*.npz")
+         if p.name != "stacks.npz" and _STACKS_VARIANT.match(p.name)}
+        - set(found)
+    )
+    stray = sorted(d for d in stray if d.name not in PRE_VERDICT_EXCLUSIONS)
+    if stray:
+        raise ValueError(
+            "cell directories carry a non-canonical stacks file and would be dropped "
+            f"silently: {[str(s) for s in stray]}. Rename to stacks.npz / meta.json, or "
+            "move the directory out of the sweep root. Exclusions are declared in "
+            "PRE_VERDICT_EXCLUSIONS, never produced by a glob miss."
+        )
+    # Excluded arms are skipped BY NAME, so the exclusion is a declared decision
+    # rather than a side effect of which files happen to be present.
+    return sorted(d for d in found if d.name not in PRE_VERDICT_EXCLUSIONS)
 
 
 def _json_default(o):

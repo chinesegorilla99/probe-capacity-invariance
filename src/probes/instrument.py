@@ -32,8 +32,45 @@ RUNG_NAMES = tuple(r.name for r in LADDER)
 
 # --- compute layer -----------------------------------------------------------
 
+def control_task_labels(Ys, seed: int, factors=FACTORS) -> list[np.ndarray]:
+    """Random-LABEL control task (Hewitt-Liang), value-level (prereg A8 §b).
+
+    Permutes each factor's VALUE -> TARGET map once and applies the SAME map to
+    every split, so the control label is a function of the image and a
+    high-capacity probe can actually fit it. Row-wise shuffling per split (the
+    superseded ``permute_labels``) is unlearnable at probe-test by construction,
+    which collapsed S to R(real) and made the §4 dead-zone case unreachable.
+
+    For a CATEGORICAL factor a value permutation is a pure relabeling, so S == 0
+    identically; A8 §b discloses this. Every targeted factor in the study is
+    continuous, where the permutation destroys the target's ordinal structure.
+
+    Args:
+        Ys: label arrays for the splits, each ``(N, K)``, sharing a column order.
+        seed: draws the per-factor value permutation.
+        factors: the dataset's factor tuple (``fac.index`` selects the column).
+
+    Returns one control-label array per input split, in the same order.
+    """
+    rng = np.random.default_rng(seed)
+    outs = [np.array(Y, copy=True) for Y in Ys]
+    for fac in factors:
+        col = fac.index
+        uniq = np.unique(np.concatenate([np.asarray(Y[:, col]) for Y in Ys]))
+        mapped = uniq[rng.permutation(len(uniq))]
+        for out in outs:
+            out[:, col] = mapped[np.searchsorted(uniq, out[:, col])]
+    return outs
+
+
 def permute_labels(Y: np.ndarray, seed: int) -> np.ndarray:
-    """Random-LABEL control (Hewitt-Liang): permute each factor column independently."""
+    """SUPERSEDED by :func:`control_task_labels` (prereg A8 §b) — kept for provenance.
+
+    Permutes each factor column's rows independently, so the control label is not
+    a function of the image and the control task cannot be learned at probe-test.
+    Retained only so the pre-A8 behaviour stays reproducible; not used by the
+    instrument.
+    """
     rng = np.random.default_rng(seed)
     out = np.array(Y, copy=True)
     for j in range(out.shape[1]):
@@ -51,8 +88,8 @@ def ladder_recoverability(feats: dict, *, seed: int, factors=FACTORS, device="cp
     Htr, Ytr = feats["probe_train"]
     Hva, Yva = feats["probe_val"]
     Hte, Yte = feats["probe_test"]
-    if permute:  # random-label control task
-        Ytr, Yva, Yte = permute_labels(Ytr, seed), permute_labels(Yva, seed), permute_labels(Yte, seed)
+    if permute:  # random-label control task (value-level, split-consistent; A8 §b)
+        Ytr, Yva, Yte = control_task_labels((Ytr, Yva, Yte), seed, factors)
 
     F, R = len(factors), len(LADDER)
     recov, params = np.zeros((F, R)), np.zeros((F, R), int)
@@ -107,23 +144,64 @@ def selectivity(real_stack: np.ndarray, perm_stack: np.ndarray, **kw):
     return {"mean": mean, "lo": lo, "hi": hi}
 
 
-def epsilon_g(random_stack: np.ndarray, n_boot=2000, alpha=0.05, seed=0) -> np.ndarray:
-    """epsilon_G[F,R]: upper limit of a 95% band on the random-vs-random null of G.
+def _null_gain_pool(random_stack: np.ndarray) -> np.ndarray:
+    """Random-vs-random null gains: all ordered seed pairs (R_i - R_j), i != j."""
+    s = random_stack.shape[0]
+    i, j = np.triu_indices(s, k=1)
+    return np.concatenate([random_stack[i] - random_stack[j],
+                           random_stack[j] - random_stack[i]])  # symmetric null
 
-    Pool all ordered seed pairs i!=j as null gains (R_i - R_j), bootstrap the pool,
-    and take the upper (1-alpha/2) percentile of the bootstrap distribution per (F,R).
+
+def epsilon_g(random_stack: np.ndarray, n_boot=2000, alpha=0.05, seed=0,
+              method: str = "null_quantile") -> np.ndarray:
+    """epsilon_G[F,R] — the init-noise band on G (prereg §4 as amended by A8 §a).
+
+    ``method="null_quantile"`` (PRIMARY, A8 §a): the (1-alpha/2) empirical quantile
+    of the random-vs-random null gain distribution — "how large a gain init noise
+    alone can produce", which is what §4's gloss describes.
+
+    ``method="ci_mean"`` (SENSITIVITY ONLY): the frozen §4 reading, a bootstrap CI
+    of the null pool's MEAN. The pool is antisymmetric, so that mean is identically
+    zero for any input and the result is the standard error of an estimator of zero:
+    ~10x too small at S=12, and shrinking as 1/sqrt(S(S-1)) so more control seeds
+    make readouts MORE likely to be called recovered. Retained co-reported, never
+    primary.
+
     Needs >= 2 random-encoder seeds; returns NaN otherwise (fall back to fixed 0.05).
     """
-    s = random_stack.shape[0]
-    if s < 2:
+    if random_stack.shape[0] < 2:
         return np.full(random_stack.shape[1:], np.nan)
-    i, j = np.triu_indices(s, k=1)
-    deltas = np.concatenate([random_stack[i] - random_stack[j],
-                             random_stack[j] - random_stack[i]])  # symmetric null
+    deltas = _null_gain_pool(random_stack)
+    if method == "null_quantile":
+        return np.percentile(deltas, 100 * (1 - alpha / 2), axis=0)
+    if method != "ci_mean":
+        raise ValueError(f"unknown method {method!r}; use 'null_quantile' or 'ci_mean'")
     rng = np.random.default_rng(seed)
     n = deltas.shape[0]
     boot = np.stack([deltas[rng.integers(0, n, n)].mean(0) for _ in range(n_boot)])
     return np.percentile(boot, 100 * (1 - alpha / 2), axis=0)
+
+
+MIN_HEADROOM = 0.02  # A8 §c: below this the G~ denominator is floored and flagged
+
+
+def headroom_gain(trained_stack: np.ndarray, random_stack: np.ndarray,
+                  *, min_headroom: float = MIN_HEADROOM, **kw) -> dict:
+    """G~ = G / (1 - mean random floor) — headroom-normalized gain (prereg A8 §c).
+
+    A per-readout monotone rescaling of G expressing gain as a fraction of the
+    headroom the normalized scale actually leaves above the untrained floor. Where
+    the floor is near the ceiling, raw G is compressed toward 0 by construction and
+    "G <= epsilon_G" cannot separate absence from lack of headroom. Co-primary with
+    G, never a replacement. Returns mean/lo/hi [F,R] plus the headroom used.
+    """
+    s = min(trained_stack.shape[0], random_stack.shape[0])
+    headroom = 1.0 - random_stack.mean(0)                       # [F, R]
+    denom = np.maximum(headroom, min_headroom)
+    gt = (trained_stack[:s] - random_stack[:s]) / denom
+    mean, lo, hi = _boot_mean_ci(gt, **kw)
+    return {"mean": mean, "lo": lo, "hi": hi,
+            "headroom": headroom, "headroom_floored": headroom < min_headroom}
 
 
 def classify(g: float, s: float, eps: float) -> str:
@@ -205,12 +283,17 @@ def build_report(trained_stack, random_stack, real_stack, perm_stack, *, factors
     """
     G = paired_gain(trained_stack, random_stack, n_boot=eps_boot)
     S = selectivity(real_stack, perm_stack, n_boot=eps_boot)
-    eps = epsilon_g(random_stack, n_boot=eps_boot)
+    Gt = headroom_gain(trained_stack, random_stack, n_boot=eps_boot)   # A8 §c co-primary
+    eps = epsilon_g(random_stack, n_boot=eps_boot, method="null_quantile")   # A8 §a primary
+    eps_ci = epsilon_g(random_stack, n_boot=eps_boot, method="ci_mean")      # frozen §4, sensitivity
     eps_used = np.where(np.isnan(eps), EPS_FIXED, eps)
-    eps_source = "fixed_0.05" if np.isnan(eps).all() else "random_vs_random_null"
+    eps_ci_used = np.where(np.isnan(eps_ci), EPS_FIXED, eps_ci)
+    eps_source = "fixed_0.05" if np.isnan(eps).all() else "random_vs_random_null_quantile"
+    sat = null_saturation(random_stack)
 
     F, R = G["mean"].shape
     inv_primary = G["mean"] <= eps_used
+    inv_ci_mean = G["mean"] <= eps_ci_used
     inv_fixed = G["mean"] <= EPS_FIXED
 
     table = {}
@@ -220,9 +303,15 @@ def build_report(trained_stack, random_stack, real_stack, perm_stack, *, factors
                 "rung": RUNG_NAMES[ri],
                 "G": float(G["mean"][fi, ri]),
                 "G_ci": [float(G["lo"][fi, ri]), float(G["hi"][fi, ri])],
+                "G_headroom_norm": float(Gt["mean"][fi, ri]),
+                "G_headroom_norm_ci": [float(Gt["lo"][fi, ri]), float(Gt["hi"][fi, ri])],
+                "headroom": float(Gt["headroom"][fi, ri]),
                 "S": float(S["mean"][fi, ri]),
                 "S_ci": [float(S["lo"][fi, ri]), float(S["hi"][fi, ri])],
                 "epsilon_G": float(eps_used[fi, ri]),
+                "epsilon_G_ci_mean": float(eps_ci_used[fi, ri]),
+                "epsilon_G_fixed": EPS_FIXED,
+                "null_saturated": bool(sat["saturated"][fi, ri]),
                 "invariant": bool(inv_primary[fi, ri]),
                 "case": classify(G["mean"][fi, ri], S["mean"][fi, ri], eps_used[fi, ri]),
             }
@@ -230,9 +319,14 @@ def build_report(trained_stack, random_stack, real_stack, perm_stack, *, factors
         ]
     return {
         "epsilon_source": eps_source,
+        "epsilon_primary": "null_quantile (A8 §a)",
         "n_seeds": {"trained": int(trained_stack.shape[0]), "random": int(random_stack.shape[0])},
         "rungs": list(RUNG_NAMES),
         "table": table,
         "flips_primary": flip_count(inv_primary, factors),
+        "flips_epsilon_ci_mean": flip_count(inv_ci_mean, factors),
         "flips_fixed_0.05": flip_count(inv_fixed, factors),
+        "flip_endpoint_saturated": {
+            factors[fi].name: bool(sat["flip_endpoint_saturated"][fi]) for fi in range(F)
+        },
     }

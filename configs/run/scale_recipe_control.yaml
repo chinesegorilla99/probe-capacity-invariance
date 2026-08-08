@@ -1,0 +1,31 @@
+# EXPLORATORY recipe control (prereg A7 §c) — NOT a confirmatory cell, never in
+# EXPECTED_CELLS, never in a Holm family, never in the flip count. Reported
+# whatever its outcome.
+#
+# Discriminates the two live explanations for the scale arm's shape-anchor
+# collapse: an augmentation-factor construct mismatch, versus a colour shortcut
+# left open by a single-augmentation recipe on a hue-dominated dataset. Identical
+# to scale_strong except the canonical photometric base is composed in. If the
+# anchor recovers here, the collapse was the recipe, not the transform.
+#
+# Pilot 1 seed first (--set run.seed=0); scale to 12 only if the pilot warrants it.
+_base_: ../base.yaml
+
+data:
+  dataset: shapes3d
+  subset: 150000
+
+augmentation:
+  condition: scale_recipe
+  strength: strong
+
+run:
+  device: cuda
+  amp: true
+  batch_size: 512
+  epochs: 50
+  warmup_epochs: 5
+  seed: 0
+
+output:
+  dir: results/encoders/scale_recipe_control

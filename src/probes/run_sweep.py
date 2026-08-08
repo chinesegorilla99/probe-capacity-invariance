@@ -29,6 +29,7 @@ single encoder's features regardless of seed count.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -38,7 +39,7 @@ import numpy as np
 from ..data.registry import get_dataset
 from ..data.splits import make_splits
 from ..encoders.augmentations import eval_transform
-from ..encoders.random_encoder import build_random_encoder
+from ..encoders.random_encoder import build_random_backbone_projector
 from ..eval.encoder_gate import gate_summary, per_seed_gate
 from ..eval.extract import (
     extract_features,
@@ -51,6 +52,15 @@ from .instrument import stack_runs
 from .ladder import LADDER, param_count
 
 RUNG_NAMES = tuple(r.name for r in LADDER)
+
+
+def _sha256(path: str | Path, blocksize: int = 1 << 20) -> str:
+    """Content hash of a checkpoint — pins which weights produced a stack."""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(blocksize), b""):
+            h.update(block)
+    return h.hexdigest()
 
 
 def _seed_from_path(path: str | Path) -> int:
@@ -165,22 +175,29 @@ def run(args) -> dict:
     perm_stack = np.concatenate(perm_rows)
     projector_stack = np.concatenate(proj_rows)
 
-    # --- random-encoder floor (defines G / epsilon_G) ---
-    random_rows = []
+    # --- random-encoder floor (defines G / epsilon_G) + matched random projector (H4, A8 §d) ---
+    random_rows, rand_proj_rows = [], []
     for rs in args.random_seed:
         cached = _cache_load(f"random_seed{rs}")
-        if cached is not None:
+        if cached is not None and "random_projector" in cached:
             random_rows.append(cached["random"])
+            rand_proj_rows.append(cached["random_projector"])
             print(f"[sweep]   random seed {rs}: loaded from cache")
             continue
-        bb = build_random_encoder(rs, device)
+        bb, pj = build_random_backbone_projector(
+            rs, device, out_dim=int(proj_out_dim) if proj_out_dim else 128)
         fr = feats_for(bb)
         rr = stack_runs([(fr, rs)], **pkw)
-        del fr, bb
+        del fr
+        fpr = proj_feats_for(bb, pj)
+        rp = stack_runs([(fpr, rs)], **pkw)
+        del fpr, bb, pj
         random_rows.append(rr)
-        _cache_save(f"random_seed{rs}", random=rr)
-        print(f"[sweep]   random seed {rs}: probed h")
+        rand_proj_rows.append(rp)
+        _cache_save(f"random_seed{rs}", random=rr, random_projector=rp)
+        print(f"[sweep]   random seed {rs}: probed h + projector floor")
     random_stack = np.concatenate(random_rows)
+    random_projector_stack = np.concatenate(rand_proj_rows)
 
     # --- per-encoder quality gate (prereg §5) from the linear-rung shape recov ---
     gates = per_seed_gate(trained_stack, random_stack, spec.factors)
@@ -200,11 +217,18 @@ def run(args) -> dict:
         random=random_stack.astype(np.float32),
         perm=perm_stack.astype(np.float32),
         projector=projector_stack.astype(np.float32),
+        random_projector=random_projector_stack.astype(np.float32),
     )
     meta = {
         "dataset": spec.name,
         "condition": args.condition,
         "strength": args.strength,
+        # Provenance: which checkpoints produced this stack. Seed integers alone
+        # cannot distinguish an original run from a retrain at the same seed.
+        "encoder_ckpts": [
+            {"path": str(p), "seed": _seed_from_path(p), "sha256": _sha256(p)}
+            for p in enc_paths
+        ],
         "factors": [
             {"name": f.name, "kind": f.kind, "index": f.index,
              "n_values": f.n_values, "cyclic": f.cyclic}
@@ -229,6 +253,7 @@ def run(args) -> dict:
                 "random": ["S_random", "F", "R"],
                 "perm": ["S_trained", "F", "R"],
                 "projector": ["S_trained", "F", "R"],
+                "random_projector": ["S_random", "F", "R"],
             },
             "axis_order": {"F": "meta.factors order", "R": "meta.rungs order (linear->mlp_deep)"},
             "recoverability": "norm-acc (categorical) | unclipped R^2 (continuous)",
