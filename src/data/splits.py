@@ -94,3 +94,71 @@ def make_value_holdout_splits(
     if len(out["probe_test"]) == 0 or len(out["probe_train"]) == 0:
         raise ValueError(f"empty extrapolation split for factor {factor_index}")
     return out
+
+
+def make_combination_holdout_splits(
+    labels: np.ndarray,
+    factor_index: int,
+    partner_index: int,
+    *,
+    base: dict[str, np.ndarray],
+    n_holdout: int = 3,
+    split_seed: int = 1234,
+) -> dict[str, np.ndarray]:
+    """Compositional split: probe-test holds out (target, partner) CELLS of the grid.
+
+    :func:`make_value_holdout_splits` withholds whole values of the target factor.
+    That is well posed for a continuous target but degenerate for a class label:
+    probe-test then contains only classes absent from probe-train, so accuracy is 0
+    by construction and the score pins to the zero-accuracy floor no matter what the
+    encoder did. Here every target value keeps some partner values in probe-train and
+    loses ``n_holdout`` of them to probe-test, so both sides cover the full label
+    space and probe-test is genuine compositional generalization -- unseen factor
+    COMBINATIONS -- rather than dense-lattice interpolation.
+
+    Args:
+        labels: ``(n_total, K)`` factor matrix, dataset order.
+        factor_index: the scored factor; its values are all retained on both sides.
+        partner_index: the factor whose values are withheld per target value.
+        base: the study's interpolation splits from :func:`make_splits`; the returned
+            splits are subsets of these, so encoder_train is never touched.
+        n_holdout: partner values withheld per target value.
+        split_seed: fixed across the study; chooses which cells are held out.
+
+    Returns probe_train / probe_val / probe_test index arrays. The held-out cells are
+    recorded under ``"_holdout_cells"``.
+    """
+    lab = np.asarray(labels)
+    target_col, partner_col = lab[:, factor_index], lab[:, partner_index]
+    target_vals, partner_vals = np.unique(target_col), np.unique(partner_col)
+    if not 0 < n_holdout < len(partner_vals):
+        raise ValueError(
+            f"n_holdout={n_holdout} must be in (0, {len(partner_vals)}) for partner "
+            f"factor {partner_index}; at least one partner value must stay in train"
+        )
+
+    rng = np.random.default_rng(split_seed + 1009 * factor_index + partner_index)
+    is_held = np.zeros(len(lab), dtype=bool)
+    cells = []
+    for value in target_vals:
+        chosen = np.sort(rng.choice(partner_vals, size=n_holdout, replace=False))
+        is_held |= (target_col == value) & np.isin(partner_col, chosen)
+        cells.append({"target_value": float(value),
+                      "partner_values": [float(v) for v in chosen]})
+
+    out = {
+        "probe_train": np.sort(base["probe_train"][~is_held[base["probe_train"]]]),
+        "probe_val": np.sort(base["probe_val"][~is_held[base["probe_val"]]]),
+        "probe_test": np.sort(base["probe_test"][is_held[base["probe_test"]]]),
+        "_holdout_cells": cells,
+    }
+    # The point of the split is that neither side loses a target value; if one does,
+    # the result would silently read as the degenerate value-holdout case.
+    for name in ("probe_train", "probe_val", "probe_test"):
+        present = np.unique(target_col[out[name]])
+        if len(out[name]) == 0 or len(present) != len(target_vals):
+            raise ValueError(
+                f"{name} covers {len(present)}/{len(target_vals)} values of factor "
+                f"{factor_index}; compositional split needs all of them on both sides"
+            )
+    return out

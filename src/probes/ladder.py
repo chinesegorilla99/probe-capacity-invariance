@@ -53,6 +53,14 @@ DEFAULT_EPOCHS = 100
 DEFAULT_BATCH = 4096
 DEFAULT_LR = 1e-3
 
+# Optimization budget is pinned in STEPS, not epochs (prereg A9). At a fixed epoch
+# count the step count scales with probe-train size — 100 epochs x ceil(n/4096) is
+# 100 steps at n=2000 but 1000 at n=40000 — so sample size and optimizer budget
+# move together, and a floor that drops at small n cannot be told apart from a
+# probe that failed to converge. 1000 reproduces the n=40000 behaviour the earlier
+# sweeps used, so results at that size are unchanged.
+DEFAULT_STEPS = 1000
+
 
 class MLPProbe(nn.Module):
     def __init__(self, in_dim: int, hidden: tuple[int, ...], out_dim: int):
@@ -86,7 +94,8 @@ def _standardize(Xtr, *others):
 
 
 def _train_one(
-    rung, Xtr, ytr, Xva, yva, Xte, yte, kind, out_dim, in_dim, wd, seed, device, epochs, batch, lr
+    rung, Xtr, ytr, Xva, yva, Xte, yte, kind, out_dim, in_dim, wd, seed, device, epochs, batch, lr,
+    steps=DEFAULT_STEPS,
 ):
     """Train one probe at a fixed weight decay; return (val_metric, test_metric)."""
     seed_everything(seed)
@@ -99,6 +108,9 @@ def _train_one(
         ytr, dtype=torch.long if kind == "categorical" else torch.float32, device=device
     )
     n = Xtr_t.shape[0]
+    batch = min(batch, n)
+    if steps:  # hold the gradient-step budget fixed across probe-train sizes (A9)
+        epochs = max(epochs, -(-steps // max(1, -(-n // batch))))
     g = torch.Generator(device="cpu").manual_seed(seed)
     probe.train()
     for _ in range(epochs):
@@ -138,6 +150,7 @@ def fit_rung(
     batch: int = DEFAULT_BATCH,
     lr: float = DEFAULT_LR,
     wd_grid: tuple[float, ...] = WEIGHT_DECAY_GRID,
+    steps: int = DEFAULT_STEPS,
 ) -> dict:
     """Fit one ladder rung for one factor; select weight decay on val; report test.
 
@@ -153,7 +166,8 @@ def fit_rung(
     best = {"val": -np.inf}
     for wd in wd_grid:
         val_m, test_m = _train_one(
-            rung, Xtr, ytr, Xva, yva, Xte, yte, kind, out_dim, in_dim, wd, seed, device, epochs, batch, lr
+            rung, Xtr, ytr, Xva, yva, Xte, yte, kind, out_dim, in_dim, wd, seed, device,
+            epochs, batch, lr, steps
         )
         if val_m > best["val"]:
             best = {"val": val_m, "test": test_m, "wd": wd}

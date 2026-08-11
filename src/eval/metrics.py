@@ -33,13 +33,13 @@ def linear_recoverability_categorical(
 
     best_c, best_val = None, -np.inf
     for c in LOGISTIC_C_GRID:
-        clf = LogisticRegression(C=c, max_iter=1000)
+        clf = LogisticRegression(C=c, max_iter=5000)
         clf.fit(Xtr, y_train)
         val_acc = accuracy_score(y_val, clf.predict(Xva))
         if val_acc > best_val:
             best_val, best_c = val_acc, c
 
-    clf = LogisticRegression(C=best_c, max_iter=1000).fit(Xtr, y_train)
+    clf = LogisticRegression(C=best_c, max_iter=5000).fit(Xtr, y_train)
     test_acc = accuracy_score(y_test, clf.predict(Xte))
     return {
         "recoverability": float(normalized_accuracy(test_acc, chance)),

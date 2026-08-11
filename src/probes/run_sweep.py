@@ -49,7 +49,7 @@ from ..eval.extract import (
 from ..utils.config import load_config
 from ..utils.device import pick_device
 from .instrument import stack_runs
-from .ladder import LADDER, param_count
+from .ladder import DEFAULT_STEPS, LADDER, param_count
 
 RUNG_NAMES = tuple(r.name for r in LADDER)
 
@@ -99,7 +99,8 @@ def run(args) -> dict:
                        return_label=True, in_memory=args.in_memory)
         for name in split_names
     }
-    pkw = dict(device=device, epochs=args.epochs, factors=spec.factors)
+    pkw = dict(device=device, epochs=args.epochs, steps=args.probe_steps,
+               factors=spec.factors)
 
     def feats_for(backbone) -> dict:
         f = {n: extract_features(backbone, datasets[n], device, bs, nw) for n in split_names}
@@ -123,7 +124,12 @@ def run(args) -> dict:
     # --- optional per-seed row cache (resume a session-killed probe) ---------
     # Each encoder is already probed independently and concatenated, so caching a
     # seed's [1,F,R] rows and reloading them is bit-equivalent to a single run.
-    cache_dir = (Path(args.out_root) / f"{args.condition}_{args.strength}" / "_cache"
+    # Rows are cached per seed, but they are only valid for the probe config that
+    # produced them, so the config tags the directory: re-running at a different
+    # probe-train size or step budget starts a fresh cache instead of silently
+    # mixing budgets, and re-running the same config still resumes.
+    cfg_tag = f"n{args.subsample or 'full'}_s{args.probe_steps}"
+    cache_dir = (Path(args.out_root) / f"{args.condition}_{args.strength}" / "_cache" / cfg_tag
                  if args.resume else None)
     if cache_dir is not None:
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -246,6 +252,7 @@ def run(args) -> dict:
         "seeds": {"trained": trained_seeds, "random": list(args.random_seed)},
         "probe_train_size": int(len(datasets["probe_train"]) if not args.subsample
                                 else args.subsample),
+        "probe_steps": int(args.probe_steps),
         "quality_gate": gate,
         "schema": {
             "stacks.npz": {
@@ -279,6 +286,9 @@ def _main() -> None:
     ap.add_argument("--batch-size", type=int, default=512)
     ap.add_argument("--num-workers", type=int, default=2)
     ap.add_argument("--epochs", type=int, default=100, help="probe training epochs")
+    ap.add_argument("--probe-steps", type=int, default=DEFAULT_STEPS,
+                    help="gradient-step budget per rung, held fixed across probe-train "
+                         "sizes (prereg A9)")
     ap.add_argument("--subsample", type=int, default=0, help="cap probe_train (0 = full/fixed)")
     ap.add_argument("--in-memory", action="store_true")
     ap.add_argument("--out-root", default="results/probes")
