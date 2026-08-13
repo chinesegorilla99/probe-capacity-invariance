@@ -1,20 +1,29 @@
-"""Two-world synthetic cells — validate the frozen H1-H4 decision procedure.
+"""Three-world synthetic cells — validate the H1-H4 decision procedure.
 
 Emits the full first-slice grid (color_strong / position_strong / control_strong,
-D022) in the exact run_sweep contract under two hand-set ground truths:
+D022) in the exact run_sweep contract under three hand-set ground truths:
 
-    null      linear-probe invariance is REAL: augmentation-targeted factors sit
-              at the random floor at EVERY rung. Expected: H1 refuted, H3
-              confirmed, H4 sign refuted, zero verdict flips.
-    artifact  linear-probe invariance is a MEASUREMENT ARTIFACT: targeted factors
-              sit at the floor at the linear rung only and rise with probe
-              capacity; the projector suppresses them below h. Expected: H1
-              confirmed, H3 refuted, H4 sign confirmed, every targeted factor
-              flips to linear_invariance_artifact.
+    null        the encoder did NOTHING to the targeted factors: they sit AT the
+                random floor at every rung. Expected: H1 refuted, H4 sign refuted,
+                zero flips; H3 REFUTED under the A10 §c primary (no training-induced
+                deficit, so "recovered") but CONFIRMED under the frozen one-sided
+                sensitivity (G <= epsilon_G), which pooled this case with real
+                suppression. That dissociation is what the world now exists to show.
+    suppressed  invariance is REAL: targeted factors are pushed BELOW the random
+                floor at every rung. Expected: H1 refuted, H4 sign refuted, zero
+                flips, H3 confirmed under both rules — the positive control for
+                A10 §c epsilon-invariance.
+    artifact    linear-probe invariance is a MEASUREMENT ARTIFACT: targeted factors
+                are suppressed below the floor at the linear rung and recovered as
+                probe capacity rises; the projector suppresses them below h.
+                Expected: H1 confirmed, H3 refuted, H4 sign confirmed, every
+                targeted factor flips to linear_invariance_artifact under both rules.
 
---validate generates both worlds, runs the H1-H4 layer UNCHANGED on each, and
+--validate generates every world, runs the H1-H4 layer UNCHANGED on each, and
 checks the assembled verdicts against the known ground truth — a power /
-false-positive check of the frozen decision procedure before any real data.
+false-positive check of the decision procedure before any real data. Both the
+A10 §c primary and the frozen one-sided sensitivity are checked, so neither
+reading can drift unnoticed.
 
 Seed count (Q15/D025): H2's confirm rule is floor-limited — Wilcoxon's exact
 two-sided minimum (2/2^n) times the assembled Holm family (~26 within-type
@@ -71,13 +80,17 @@ GRID = (
     ("control", "strong", "shapes3d", SHAPES3D_FACTORS, ()),
 )
 
-WORLDS = ("null", "artifact")
+WORLDS = ("null", "suppressed", "artifact")
 N_SEEDS = 12        # sweep seed count (D025): H2-decidable, prereg-compliant (>=10)
 BASE = 0.5          # random-encoder floor level
 NOISE_FLOOR = 0.01  # per-seed floor noise
 NOISE_RIDE = 0.002  # targeted-factor noise around the paired floor (null world)
 G_GENUINE = {"continuous": 0.4, "categorical": 0.3}     # non-targeted factors, flat
-G_ARTIFACT = (-0.01, 0.15, 0.30, 0.40)                   # per-rung G, linear -> deep
+# Per-rung G on targeted factors, linear -> deep. The artifact world's linear rung
+# must be a REAL deficit, not a ride on the floor: A10 §c's flip needs D > epsilon_D
+# at the linear rung, and the null null-gain band here is ~0.03 wide.
+G_ARTIFACT = (-0.15, 0.15, 0.30, 0.40)
+G_SUPPRESSED = -0.25                                     # flat, well below the floor
 PROJ_GAP = 0.3      # artifact world: projector sits below h on targeted factors
 
 README = """# results/_synthetic — SYNTHETIC PIPELINE-VALIDATION FIXTURES
@@ -97,11 +110,15 @@ def make_cell(world: str, factors, targeted, rng, n_t: int = N_SEEDS,
     trained = np.empty((n_t, F, R))
     for fi, fac in enumerate(factors):
         if fac["name"] in targeted and world == "null":
-            # invariance is real: ride the seed-paired floor at every rung
+            # the encoder did nothing: ride the seed-paired floor at every rung
             trained[:, fi] = random[np.arange(n_t) % n_r, fi] + \
                 rng.normal(0, NOISE_RIDE, (n_t, R))
+        elif fac["name"] in targeted and world == "suppressed":
+            # invariance is real: pushed below the floor at every rung
+            trained[:, fi] = BASE + G_SUPPRESSED + rng.normal(0, NOISE_FLOOR, (n_t, R))
         elif fac["name"] in targeted:
-            # artifact: at the floor under the linear rung, rising with capacity
+            # artifact: suppressed below the floor at the linear rung, recovered as
+            # probe capacity rises
             trained[:, fi] = BASE + np.asarray(G_ARTIFACT) + \
                 rng.normal(0, NOISE_FLOOR, (n_t, R))
         else:
@@ -180,18 +197,30 @@ def h2_floor(n_t: int, n_pairs: int) -> float:
 
 
 def expected(world: str, n_t: int, n_pairs: int = 26) -> dict:
-    """Ground-truth verdicts per world. H1/H3/H4 follow the world's construction;
-    H2 under true heterogeneity (artifact world) is confirmable only when the
-    Wilcoxon x Holm floor clears alpha (Q15/D025) — refuted at n=10, confirmed
-    at n>=12 on the 26-pair first-slice family."""
+    """Ground-truth verdicts per world, for BOTH the A10 §c primary (two-sided
+    deficit) and the frozen one-sided sensitivity. H1/H3/H4 follow the world's
+    construction; H2 under true heterogeneity (artifact world) is confirmable only
+    when the Wilcoxon x Holm floor clears alpha (Q15/D025) — refuted at n=10,
+    confirmed at n>=12 on the 26-pair first-slice family."""
     h2_artifact = "confirmed" if h2_floor(n_t, n_pairs) < ALPHA else "refuted"
     return {
-        "null": {"H1": "refuted", "H2": "refuted", "H3": "confirmed",
-                 "H4_sign": "refuted", "flips": 0,
-                 "verdict": "invariant_across_ladder"},
-        "artifact": {"H1": "confirmed", "H2": h2_artifact, "H3": "refuted",
-                     "H4_sign": "confirmed", "flips": 5,
-                     "verdict": "linear_invariance_artifact"},
+        # riding the floor is "recovered" under A10 §c and "invariant" under the
+        # frozen rule — the whole point of the two-sided repair
+        "null": {"H1": "refuted", "H2": "refuted",
+                 "H3": "refuted", "H3_frozen": "confirmed",
+                 "H4_sign": "refuted", "flips": 0, "flips_frozen": 0,
+                 "verdict": "recovered_at_all_capacities",
+                 "verdict_frozen": "invariant_across_ladder"},
+        "suppressed": {"H1": "refuted", "H2": "refuted",
+                       "H3": "confirmed", "H3_frozen": "confirmed",
+                       "H4_sign": "refuted", "flips": 0, "flips_frozen": 0,
+                       "verdict": "suppressed_across_ladder",
+                       "verdict_frozen": "invariant_across_ladder"},
+        "artifact": {"H1": "confirmed", "H2": h2_artifact,
+                     "H3": "refuted", "H3_frozen": "refuted",
+                     "H4_sign": "confirmed", "flips": 5, "flips_frozen": 5,
+                     "verdict": "linear_invariance_artifact",
+                     "verdict_frozen": "linear_invariance_artifact"},
     }[world]
 
 
@@ -229,12 +258,18 @@ def validate_world(world: str, world_root: Path, n_boot: int = 500,
     check("H1", hs["H1"]["status"], exp["H1"])
     check("H2", hs["H2"]["status"], exp["H2"])
     check("H3", hs["H3"]["status"], exp["H3"])
+    check("H3 (frozen)", hs["H3"]["status_frozen"], exp["H3_frozen"])
     check("H4 sign", hs["H4"]["sign_component"]["status"], exp["H4_sign"])
-    check("flips (primary)", study["headline_flip_count"]["primary"]["n_flips"], exp["flips"])
+    hl = study["headline_flip_count"]
+    check("flips (A10 §c two-sided)", hl["two_sided"]["n_flips"], exp["flips"])
+    check("flips (frozen primary)", hl["primary"]["n_flips"], exp["flips_frozen"])
     check("headline complete", study["headline_contrast"]["complete"], True)
-    by_cf = {(t["cell"], t["factor"]): t["verdict"] for t in study["verdict_table"]}
+    by_cf = {(t["cell"], t["factor"]): t for t in study["verdict_table"]}
     for cell, factor in TARGETED_CHECK:
-        check(f"verdict {cell}/{factor}", by_cf.get((cell, factor)), exp["verdict"])
+        row = by_cf.get((cell, factor)) or {}
+        check(f"verdict {cell}/{factor}", row.get("verdict"), exp["verdict"])
+        check(f"verdict (frozen) {cell}/{factor}", row.get("verdict_frozen"),
+              exp["verdict_frozen"])
     return study, fails
 
 

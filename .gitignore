@@ -56,3 +56,6 @@ mlruns/
 # --- Obsidian lab notebook (local working notes — kept out of the repo by choice) ---
 lab-notebook/
 .obsidian/
+
+# --- Local planning notes (working brain, not part of the released study) ---
+newplan.md

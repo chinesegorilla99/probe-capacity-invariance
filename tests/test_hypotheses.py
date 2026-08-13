@@ -44,15 +44,17 @@ FACTORS_META = [
 N_BOOT = 500  # plenty for stable CIs at these effect sizes; keeps tests fast
 
 
-def make_stacks(rng, n_t=10, n_r=10, proj_gap=0.3):
+def make_stacks(rng, n_t=10, n_r=10, proj_gap=0.3, g_target=None):
     F, R = 6, 4
     base = 0.5
     random = base + rng.normal(0, 0.01, (n_r, F, R))
-    g_target = np.zeros((F, R))
-    g_target[1] = -0.3
-    g_target[2] = [-0.02, 0.15, 0.30, 0.40]
-    g_target[3] = 0.5
-    g_target[4] = 0.3
+    if g_target is None:
+        g_target = np.zeros((F, R))
+        g_target[1] = -0.3
+        g_target[2] = [-0.02, 0.15, 0.30, 0.40]
+        g_target[3] = 0.5
+        g_target[4] = 0.3
+    g_target = np.asarray(g_target, float)
     trained = np.empty((n_t, F, R))
     for f in (0, 5):  # null factors: per-seed G tightly ~0
         trained[:, f] = random[np.arange(n_t) % n_r, f] + rng.normal(0, 0.003, (n_t, R))
@@ -239,7 +241,8 @@ class TestHypotheses(unittest.TestCase):
         self.assertEqual(self.res["flip_uncertainty"]["fixed_0.05"]["n_flips_ci95"],
                          [1.0, 1.0])
         self.assertEqual(set(self.res["_flip_draws"]),
-                         {"primary", "fixed_0.05",
+                         {"two_sided", "two_sided_excl_null_saturated",
+                          "primary", "fixed_0.05",
                           "primary_excl_null_saturated", "fixed_0.05_excl_null_saturated"})
 
     def test_null_saturation_absent_at_low_floor(self):
@@ -381,17 +384,27 @@ class TestHypotheses(unittest.TestCase):
             by_factor = {r["factor"]: r for r in res["h3"]["per_factor"]}
             self.assertTrue(by_factor["floor_hue"]["invariant_all_rungs"])
             self.assertTrue(by_factor["floor_hue"]["null_saturated"])
-            self.assertNotIn("floor_hue", res["h3"]["confirmed_factors"])
-            self.assertIn("floor_hue", res["h3"]["invariant_but_null_saturated"])
-            # the suppressed factor (G=-0.3, floor unsaturated) still confirms H3
+            self.assertNotIn("floor_hue", res["h3"]["confirmed_factors_frozen"])
+            self.assertIn("floor_hue", res["h3"]["invariant_but_null_saturated_frozen"])
+            # A10 (c): riding a saturated floor is "recovered", so the two-sided rule
+            # never called it invariant in the first place — the A6 gate is what stops
+            # the FROZEN sensitivity from confirming off the ceiling.
+            self.assertFalse(by_factor["floor_hue"]["eps_invariant"])
+            self.assertNotIn("floor_hue", res["h3"]["invariant_but_null_saturated"])
+            # the suppressed factor (G=-0.3, floor unsaturated) confirms H3 under both
             self.assertIn("wall_hue", res["h3"]["confirmed_factors"])
+            self.assertIn("wall_hue", res["h3"]["confirmed_factors_frozen"])
             self.assertTrue(res["h3"]["confirmed"])
 
             study = assemble([res])
             h3 = study["hypotheses"]["H3"]
             self.assertNotIn("floor_hue", {f for _, f, _ in h3["confirmed_cells_factors"]})
-            self.assertIn(["satnull_strong", "floor_hue"], h3["invariant_but_null_saturated"])
+            self.assertNotIn(["satnull_strong", "floor_hue"],
+                             h3["confirmed_cells_factors_frozen"])
+            self.assertIn(["satnull_strong", "floor_hue"],
+                          h3["invariant_but_null_saturated_frozen"])
             self.assertEqual(h3["status"], "confirmed")
+            self.assertEqual(h3["status_frozen"], "confirmed")
             self.assertTrue(any("NULL-SATURATED" in n for n in study["notes"]))
             json.dumps(study)
         finally:
@@ -407,13 +420,20 @@ class TestHypotheses(unittest.TestCase):
         self.assertEqual(row["params_by_rung"], [513, 32897, 131585, 164353])
         self.assertTrue(row["monotone_nondecreasing"])
 
-    def test_headline_for_claims_is_saturation_excluded(self):
-        # A6: the flip count quoted in claims is the null-saturation-excluded variant.
+    def test_headline_for_claims_is_two_sided_saturation_excluded(self):
+        # A10 (c): the flip count quoted in claims is the TWO-SIDED deficit flip, with
+        # A6's null-saturation exclusion still applied. Both frozen one-sided variants
+        # (primary epsilon_G and fixed 0.05, each all-factor and saturation-excluded)
+        # stay co-reported as sensitivities.
         study = assemble([self.res])
         hl = study["headline_flip_count"]
         hfc = hl["headline_for_claims"]
-        self.assertEqual(hfc["variant"], "primary_excl_null_saturated")
-        self.assertEqual(hfc["n_flips"], hl["primary_excl_null_saturated"]["n_flips"])
+        self.assertEqual(hfc["variant"], "two_sided_excl_null_saturated")
+        self.assertEqual(hfc["n_flips"], hl["two_sided_excl_null_saturated"]["n_flips"])
+        for frozen in ("primary", "fixed_0.05",
+                       "primary_excl_null_saturated", "fixed_0.05_excl_null_saturated"):
+            self.assertIn(frozen, hl)
+            self.assertIn(frozen, hl["uncertainty"])
 
     def test_holm_family_disclosure(self):
         # The maximal designed family is disclosed with pre-verdict exclusions, so the
@@ -438,6 +458,145 @@ class TestHypotheses(unittest.TestCase):
             self.assertEqual(study["hypotheses"]["H4"]["status"], "confirmed")
         finally:
             shutil.rmtree(tmp2)
+
+
+class TestTwoSidedInvariance(unittest.TestCase):
+    """Amendment A10 §c: the invariance boolean and the flip statistic are two-sided
+    on the training-induced deficit D = R(random) - R(trained), with the frozen
+    one-sided reading (G <= epsilon_G) co-reported as a sensitivity."""
+
+    def test_suppressed_then_recovered_readout_flips(self):
+        # object_hue is pushed 0.20 BELOW the untrained floor at the linear rung and
+        # is fully recovered by the top rung: suppressed -> recovered is the A10 §c
+        # flip. wall_hue is suppressed at EVERY rung, which is epsilon-invariance,
+        # not a flip — the two must not be conflated.
+        tmp = tempfile.mkdtemp()
+        try:
+            rng = np.random.default_rng(21)
+            g = np.zeros((6, 4))
+            g[1] = -0.30                        # wall_hue: suppressed throughout
+            g[2] = [-0.20, 0.15, 0.30, 0.40]    # object_hue: suppressed -> recovered
+            g[3], g[4] = 0.5, 0.3
+            trained, random, perm, projector = make_stacks(rng, g_target=g)
+            d = write_raw(tmp, condition="flip", strength="strong", trained=trained,
+                          random=random, perm=perm, projector=projector,
+                          trained_seeds=range(10), random_seeds=range(10))
+            res = analyze_cell(load_cell(d), n_boot=N_BOOT)
+
+            rows = res["report"]["table"]["object_hue"]
+            self.assertGreater(rows[0]["D"], rows[0]["epsilon_D"])
+            self.assertTrue(rows[0]["suppressed"])
+            self.assertEqual(rows[0]["case_two_sided"], "suppressed")
+            self.assertLessEqual(rows[-1]["D"], rows[-1]["epsilon_D"])
+            self.assertFalse(rows[-1]["suppressed"])
+            self.assertEqual(rows[-1]["case_two_sided"], "recovered")
+            self.assertEqual(res["report"]["flips_two_sided"]["flipped_factors"],
+                             ["object_hue"])
+
+            # suppressed at every rung is epsilon-invariance, never a flip
+            by_factor = {r["factor"]: r for r in res["h3"]["per_factor"]}
+            self.assertTrue(by_factor["wall_hue"]["eps_invariant"])
+            self.assertFalse(by_factor["object_hue"]["eps_invariant"])
+            self.assertIn("wall_hue", res["h3"]["confirmed_factors"])
+            self.assertNotIn("wall_hue",
+                             res["report"]["flips_two_sided"]["flipped_factors"])
+
+            fu = res["flip_uncertainty"]["two_sided"]
+            self.assertGreater(fu["per_factor_flip_fraction"]["object_hue"], 0.9)
+            self.assertLess(fu["per_factor_flip_fraction"]["wall_hue"], 0.1)
+
+            study = assemble([res])
+            row = next(t for t in study["verdict_table"] if t["factor"] == "object_hue")
+            self.assertEqual(row["verdict"], "linear_invariance_artifact")
+            self.assertTrue(row["flip_two_sided"])
+            wall = next(t for t in study["verdict_table"] if t["factor"] == "wall_hue")
+            self.assertEqual(wall["verdict"], "suppressed_across_ladder")
+            self.assertFalse(wall["flip_two_sided"])
+            hl = study["headline_flip_count"]
+            self.assertEqual(hl["two_sided"]["n_flips"], 1)
+            self.assertEqual(hl["headline_for_claims"]["n_flips"], 1)
+            json.dumps(study)
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_near_ceiling_floor_invariant_only_under_frozen_rule(self):
+        # A10 §c's motivating case: floor_hue's untrained floor sits at ~0.99 and the
+        # trained encoder rides it, so G ~ 0 satisfies the FROZEN boolean at every rung
+        # ("invariant") while the two-sided rule sees no training-induced deficit at
+        # all -> "recovered", never epsilon-invariant. The frozen statistic could
+        # confirm genuine invariance off a measurement ceiling; the primary cannot.
+        tmp = tempfile.mkdtemp()
+        try:
+            rng = np.random.default_rng(31)
+            trained, random, perm, projector = make_stacks(rng)
+            random[:, 0, :] += 0.49    # floor_hue floor 0.5 -> ~0.99 (near ceiling)
+            trained[:, 0, :] += 0.49   # trained rides it: per-seed G ~ 0
+            d = write_raw(tmp, condition="ceiling", strength="strong", trained=trained,
+                          random=random, perm=perm, projector=projector,
+                          trained_seeds=range(10), random_seeds=range(10))
+            res = analyze_cell(load_cell(d), n_boot=N_BOOT)
+
+            self.assertGreater(min(res["levels"]["random_floor"]["floor_hue"]["mean"]), 0.95)
+            row = next(r for r in res["h3"]["per_factor"] if r["factor"] == "floor_hue")
+            self.assertTrue(row["null_saturated"])
+            self.assertTrue(row["invariant_all_rungs"])       # frozen: invariant
+            self.assertFalse(row["eps_invariant"])            # A10 §c primary: NOT
+            self.assertFalse(any(row["suppressed_by_rung"]))
+            self.assertNotIn("floor_hue", res["h3"]["confirmed_factors"])
+            self.assertNotIn("floor_hue", res["h3"]["invariant_but_null_saturated"])
+            self.assertIn("floor_hue", res["h3"]["invariant_but_null_saturated_frozen"])
+
+            # orientation rides an UNSATURATED floor: same dissociation with the A6
+            # saturation gate out of the picture, so the split is the rule's, not A6's.
+            orient = next(r for r in res["h3"]["per_factor"] if r["factor"] == "orientation")
+            self.assertFalse(orient["null_saturated"])
+            self.assertTrue(orient["invariant_all_rungs"])
+            self.assertFalse(orient["eps_invariant"])
+
+            study = assemble([res])
+            v = next(t for t in study["verdict_table"] if t["factor"] == "floor_hue")
+            self.assertEqual(v["verdict"], "recovered_at_all_capacities")
+            self.assertEqual(v["verdict_frozen"], "invariant_across_ladder")
+            self.assertIn("orientation", " ".join(study["notes"]))
+            self.assertTrue(any("FROZEN one-sided rule" in n for n in study["notes"]))
+            json.dumps(study)
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_epsilon_d_does_not_shrink_with_control_sample_size(self):
+        # A8 §a diagnosed the frozen CI-of-the-null-MEAN estimator: the null pool is
+        # antisymmetric, so its mean is identically zero and the bootstrap returns the
+        # standard error of an estimator of zero, shrinking as 1/sqrt(S(S-1)). ADDING
+        # control seeds therefore made readouts MORE likely to be called recovered.
+        # epsilon_D inherits A8 §a's fix (a null QUANTILE), so it converges on the true
+        # null tail instead of collapsing. Checked on identical draws per S.
+        from src.probes.instrument import epsilon_d, epsilon_g
+
+        quant, ci_mean = {}, {}
+        for s in (12, 24, 48):
+            rng = np.random.default_rng(5)
+            random = 0.5 + rng.normal(0, 0.05, (s, 1, 1))   # sigma matches A8 §a
+            quant[s] = float(epsilon_d(random, n_boot=N_BOOT)[0, 0])
+            ci_mean[s] = float(epsilon_g(random, n_boot=N_BOOT, method="ci_mean")[0, 0])
+
+        # true 97.5th percentile of the null deficit at sigma=0.05 is ~0.139
+        for s, v in quant.items():
+            self.assertGreater(v, 0.08, f"epsilon_D collapsed at S={s}: {v}")
+            self.assertLess(v, 0.20, f"epsilon_D inflated at S={s}: {v}")
+        self.assertGreater(quant[48], 0.8 * quant[12])   # stable, not shrinking
+        # the superseded estimator on the SAME draws collapses toward zero
+        self.assertLess(ci_mean[48], 0.4 * ci_mean[12])
+        self.assertLess(ci_mean[48], quant[48] / 10)
+
+    def test_epsilon_d_matches_epsilon_g_by_pool_symmetry(self):
+        # The random-vs-random null pool carries both signs, so the deficit and gain
+        # quantiles coincide. Asserted rather than assumed: the deficit pool is built
+        # in its own direction, and this pins the equality as a property of the pool.
+        from src.probes.instrument import epsilon_d, epsilon_g
+
+        rng = np.random.default_rng(3)
+        random = 0.5 + rng.normal(0, 0.02, (12, 3, 4))
+        np.testing.assert_allclose(epsilon_d(random), epsilon_g(random))
 
 
 if __name__ == "__main__":

@@ -18,6 +18,19 @@ epsilon_G interpretation (impl choice, flagged for the Phase-3 stats review): th
 prereg fixes "upper bound of the bootstrap 95% CI of G under the random-vs-random
 null." We read that as the upper limit of a two-sided 95% band on the null G
 distribution per (F,c) — i.e. how large a gain init noise alone can produce.
+
+Amendment A10 (c) (2026-08-12) makes the invariance boolean and the flip statistic
+TWO-SIDED, keyed on the deficit training caused rather than the gain it added, and
+demotes the frozen one-sided reading to a co-reported sensitivity:
+
+    D(F,c)         = R(random enc) - R(trained enc)   [= -G; training-induced deficit]
+    epsilon_D(F,c) upper tail of the random-vs-random-encoder null on D
+    suppressed iff D > epsilon_D ; recovered iff D <= epsilon_D
+    epsilon-invariant iff suppressed at EVERY rung
+    flip           suppressed at the linear rung AND recovered at the top rung
+
+The frozen boolean (G <= epsilon_G), its case grid, and both frozen flip variants
+(primary epsilon_G, fixed 0.05) are still computed and reported alongside.
 """
 
 from __future__ import annotations
@@ -136,6 +149,18 @@ def paired_gain(trained_stack: np.ndarray, random_stack: np.ndarray, **kw):
     return {"mean": mean, "lo": lo, "hi": hi}
 
 
+def paired_deficit(trained_stack: np.ndarray, random_stack: np.ndarray, **kw):
+    """D = R(random) - R(trained), paired per seed (prereg A10 c). mean/lo/hi [F,R].
+
+    D == -G identically, and the bootstrap shares _boot_mean_ci's rng, so the D
+    and G intervals come from the same seed draws (prereg §7 paired bootstrap).
+    """
+    s = min(trained_stack.shape[0], random_stack.shape[0])
+    d = random_stack[:s] - trained_stack[:s]
+    mean, lo, hi = _boot_mean_ci(d, **kw)
+    return {"mean": mean, "lo": lo, "hi": hi}
+
+
 def selectivity(real_stack: np.ndarray, perm_stack: np.ndarray, **kw):
     """S = R(real) - R(random labels), paired per seed on the trained encoder."""
     s = min(real_stack.shape[0], perm_stack.shape[0])
@@ -150,6 +175,20 @@ def _null_gain_pool(random_stack: np.ndarray) -> np.ndarray:
     i, j = np.triu_indices(s, k=1)
     return np.concatenate([random_stack[i] - random_stack[j],
                            random_stack[j] - random_stack[i]])  # symmetric null
+
+
+def _null_deficit_pool(random_stack: np.ndarray) -> np.ndarray:
+    """Random-vs-random null deficits: all ordered seed pairs (R_j - R_i), i != j.
+
+    The gain pool already carries both signs, so this is the same multiset and the
+    two (1-alpha/2) quantiles coincide numerically. Built in the deficit direction
+    anyway so the estimator states what A10 (c) defines instead of leaning on that
+    symmetry, which no longer holds if the pool construction ever changes.
+    """
+    s = random_stack.shape[0]
+    i, j = np.triu_indices(s, k=1)
+    return np.concatenate([random_stack[j] - random_stack[i],
+                           random_stack[i] - random_stack[j]])
 
 
 def epsilon_g(random_stack: np.ndarray, n_boot=2000, alpha=0.05, seed=0,
@@ -172,6 +211,34 @@ def epsilon_g(random_stack: np.ndarray, n_boot=2000, alpha=0.05, seed=0,
     if random_stack.shape[0] < 2:
         return np.full(random_stack.shape[1:], np.nan)
     deltas = _null_gain_pool(random_stack)
+    if method == "null_quantile":
+        return np.percentile(deltas, 100 * (1 - alpha / 2), axis=0)
+    if method != "ci_mean":
+        raise ValueError(f"unknown method {method!r}; use 'null_quantile' or 'ci_mean'")
+    rng = np.random.default_rng(seed)
+    n = deltas.shape[0]
+    boot = np.stack([deltas[rng.integers(0, n, n)].mean(0) for _ in range(n_boot)])
+    return np.percentile(boot, 100 * (1 - alpha / 2), axis=0)
+
+
+def epsilon_d(random_stack: np.ndarray, n_boot=2000, alpha=0.05, seed=0,
+              method: str = "null_quantile") -> np.ndarray:
+    """epsilon_D[F,R] — the init-noise band on the deficit D (prereg A10 c).
+
+    Same estimator as :func:`epsilon_g`, applied to the random-vs-random null
+    DEFICIT pool: the (1-alpha/2) empirical quantile is how large a deficit
+    encoder-init noise alone can produce, so "suppressed" (D > epsilon_D) means a
+    deficit larger than two untrained encoders show against each other.
+
+    ``method="ci_mean"`` reproduces the superseded A8 (a) estimator for
+    sensitivity reporting only; it is the standard error of an estimator of zero
+    and SHRINKS as more control seeds are added.
+
+    Needs >= 2 random-encoder seeds; returns NaN otherwise (fall back to fixed 0.05).
+    """
+    if random_stack.shape[0] < 2:
+        return np.full(random_stack.shape[1:], np.nan)
+    deltas = _null_deficit_pool(random_stack)
     if method == "null_quantile":
         return np.percentile(deltas, 100 * (1 - alpha / 2), axis=0)
     if method != "ci_mean":
@@ -205,27 +272,55 @@ def headroom_gain(trained_stack: np.ndarray, random_stack: np.ndarray,
 
 
 def classify(g: float, s: float, eps: float) -> str:
-    """Dual-gate case (prereg §4)."""
+    """FROZEN §4 dual-gate case — sensitivity only since A10 (c)."""
     if g <= eps:
         return "suppressed" if g < 0 else "invariant"  # G<0 reported distinctly
     return "genuine" if s > 0 else "dead_zone"
 
 
-def flip_count(inv_bool: np.ndarray, factors=FACTORS) -> dict:
-    """Invariance boolean G<=eps flipping between the linear rung (0) and top (-1)."""
-    flipped = inv_bool[:, 0] != inv_bool[:, -1]
+def classify_deficit(d: float, eps_d: float) -> str:
+    """PRIMARY two-sided case (prereg A10 c): suppressed iff D > epsilon_D."""
+    return "suppressed" if d > eps_d else "recovered"
+
+
+def _frozen_flip_mask(gm: np.ndarray, eps: np.ndarray) -> np.ndarray:
+    """FROZEN §6 flip rule: the one-sided boolean G<=eps changes, either direction."""
+    inv = gm <= eps
+    return inv[:, 0] != inv[:, -1]
+
+
+def _deficit_flip_mask(dm: np.ndarray, eps_d: np.ndarray) -> np.ndarray:
+    """A10 (c) flip rule: suppressed at the linear rung AND recovered at the top."""
+    supp = dm > eps_d
+    return supp[:, 0] & ~supp[:, -1]
+
+
+def _flip_summary(flipped: np.ndarray, factors) -> dict:
     names = [factors[i].name for i in np.where(flipped)[0]]
     return {"n_flips": int(flipped.sum()), "flipped_factors": names}
 
 
-def flip_bootstrap(g_perseed: np.ndarray, eps, n_boot=2000, seed=0, factors=FACTORS) -> dict:
+def flip_count(inv_bool: np.ndarray, factors=FACTORS) -> dict:
+    """FROZEN flip: the boolean G<=eps changing between the linear rung (0) and top (-1)."""
+    return _flip_summary(inv_bool[:, 0] != inv_bool[:, -1], factors)
+
+
+def deficit_flip_count(suppressed: np.ndarray, factors=FACTORS) -> dict:
+    """A10 (c) PRIMARY flip: suppressed at the linear rung, recovered at the top."""
+    return _flip_summary(suppressed[:, 0] & ~suppressed[:, -1], factors)
+
+
+def flip_bootstrap(g_perseed: np.ndarray, eps, n_boot=2000, seed=0, factors=FACTORS,
+                   rule=_frozen_flip_mask) -> dict:
     """Seed-resampling uncertainty of the flip count at a FIXED eps threshold (A1 §c).
 
-    Resamples the paired per-seed G stack [S,F,R] with the same rng pattern as
-    _boot_mean_ci (shared draws with the G/S CIs), recomputes the mean-G
-    invariance boolean per draw, and counts linear-vs-top flips. Threshold (eps)
-    uncertainty is carried separately by the epsilon_G diagnostics. Returns the
-    summary plus the raw per-draw counts under "_draws" (for study-level sums).
+    Resamples the paired per-seed statistic stack [S,F,R] with the same rng pattern
+    as _boot_mean_ci (shared draws with the G/S CIs), re-applies ``rule`` to the
+    resampled mean, and counts flips. ``rule`` is _frozen_flip_mask for the frozen
+    G<=eps sensitivity and _deficit_flip_mask for the A10 (c) primary, which reads
+    the per-seed DEFICIT stack against epsilon_D. Threshold (eps) uncertainty is
+    carried separately by the epsilon diagnostics. Returns the summary plus the raw
+    per-draw counts under "_draws" (for study-level sums).
     """
     rng = np.random.default_rng(seed)
     s = g_perseed.shape[0]
@@ -234,8 +329,7 @@ def flip_bootstrap(g_perseed: np.ndarray, eps, n_boot=2000, seed=0, factors=FACT
     flip_frac = np.zeros(g_perseed.shape[1])
     for b in range(n_boot):
         gm = g_perseed[rng.integers(0, s, s)].mean(0)
-        inv = gm <= eps
-        flipped = inv[:, 0] != inv[:, -1]
+        flipped = rule(gm, eps)
         draws[b] = int(flipped.sum())
         flip_frac += flipped
     flip_frac /= n_boot
@@ -282,16 +376,20 @@ def build_report(trained_stack, random_stack, real_stack, perm_stack, *, factors
     threshold. Returns a JSON-friendly dict.
     """
     G = paired_gain(trained_stack, random_stack, n_boot=eps_boot)
+    D = paired_deficit(trained_stack, random_stack, n_boot=eps_boot)   # A10 §c primary
     S = selectivity(real_stack, perm_stack, n_boot=eps_boot)
     Gt = headroom_gain(trained_stack, random_stack, n_boot=eps_boot)   # A8 §c co-primary
     eps = epsilon_g(random_stack, n_boot=eps_boot, method="null_quantile")   # A8 §a primary
     eps_ci = epsilon_g(random_stack, n_boot=eps_boot, method="ci_mean")      # frozen §4, sensitivity
+    eps_d = epsilon_d(random_stack, n_boot=eps_boot, method="null_quantile")  # A10 §c
     eps_used = np.where(np.isnan(eps), EPS_FIXED, eps)
     eps_ci_used = np.where(np.isnan(eps_ci), EPS_FIXED, eps_ci)
+    eps_d_used = np.where(np.isnan(eps_d), EPS_FIXED, eps_d)
     eps_source = "fixed_0.05" if np.isnan(eps).all() else "random_vs_random_null_quantile"
     sat = null_saturation(random_stack)
 
     F, R = G["mean"].shape
+    suppressed = D["mean"] > eps_d_used            # A10 §c primary boolean
     inv_primary = G["mean"] <= eps_used
     inv_ci_mean = G["mean"] <= eps_ci_used
     inv_fixed = G["mean"] <= EPS_FIXED
@@ -308,6 +406,13 @@ def build_report(trained_stack, random_stack, real_stack, perm_stack, *, factors
                 "headroom": float(Gt["headroom"][fi, ri]),
                 "S": float(S["mean"][fi, ri]),
                 "S_ci": [float(S["lo"][fi, ri]), float(S["hi"][fi, ri])],
+                # --- A10 §c primary: the two-sided deficit boolean
+                "D": float(D["mean"][fi, ri]),
+                "D_ci": [float(D["lo"][fi, ri]), float(D["hi"][fi, ri])],
+                "epsilon_D": float(eps_d_used[fi, ri]),
+                "suppressed": bool(suppressed[fi, ri]),
+                "case_two_sided": classify_deficit(D["mean"][fi, ri], eps_d_used[fi, ri]),
+                # --- frozen §4 reading, co-reported as sensitivity
                 "epsilon_G": float(eps_used[fi, ri]),
                 "epsilon_G_ci_mean": float(eps_ci_used[fi, ri]),
                 "epsilon_G_fixed": EPS_FIXED,
@@ -320,12 +425,20 @@ def build_report(trained_stack, random_stack, real_stack, perm_stack, *, factors
     return {
         "epsilon_source": eps_source,
         "epsilon_primary": "null_quantile (A8 §a)",
+        "invariance_rule_primary": "two-sided deficit (A10 §c): suppressed iff "
+                                   "D = R(random) - R(trained) > epsilon_D; "
+                                   "epsilon-invariant iff suppressed at every rung",
         "n_seeds": {"trained": int(trained_stack.shape[0]), "random": int(random_stack.shape[0])},
         "rungs": list(RUNG_NAMES),
         "table": table,
-        "flips_primary": flip_count(inv_primary, factors),
+        "flips_two_sided": deficit_flip_count(suppressed, factors),      # A10 §c primary
+        "eps_invariant_two_sided": {factors[fi].name: bool(suppressed[fi].all())
+                                    for fi in range(F)},
+        "flips_primary": flip_count(inv_primary, factors),               # frozen sensitivity
         "flips_epsilon_ci_mean": flip_count(inv_ci_mean, factors),
         "flips_fixed_0.05": flip_count(inv_fixed, factors),
+        "invariant_all_rungs_frozen": {factors[fi].name: bool(inv_primary[fi].all())
+                                       for fi in range(F)},
         "flip_endpoint_saturated": {
             factors[fi].name: bool(sat["flip_endpoint_saturated"][fi]) for fi in range(F)
         },

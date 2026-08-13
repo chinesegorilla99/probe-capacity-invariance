@@ -20,9 +20,14 @@ because neither touches a targeted factor:
     solver on identical features; a gap at the linear rung inflates every
     ``Delta_G``.
 
-BLIND GUARD: only the categorical **shape** anchor (the §5 gate factor, orthogonal
-to H1-H4) and the raw-pixel reference are scored. Targeted factors are never
-touched — see ``_anchor_only``.
+BLIND GUARD: this module builds only **random (untrained) encoders** and the identity
+pixel reference; it never loads a trained checkpoint, so nothing it computes can carry
+a trained-encoder value. The capacity-axis check (B) is scored on the categorical
+**shape** anchor alone, because its convex cross-check is categorical. The headroom
+check (A) is scored on **every** factor: a random-encoder floor is a property of the
+architecture and the split, not of training, and A4 already discloses such floors.
+Pinning on the anchor alone pins a configuration with headroom for shape while the
+targeted readouts stay saturated.
 
     python -m src.probes.instrument_calibration --dataset shapes3d \
         --probe-train-sizes 2000 5000 10000 40000 --probe-steps 1000 4000 \
@@ -143,13 +148,40 @@ def run(args) -> dict:
         "results": [],
     }
 
+    # Resume. A full sweep runs for hours and a Kaggle session is capped, so a run
+    # with no checkpoint can be killed indefinitely without ever finishing. Completed
+    # (regime, size, steps, role) rows are reloaded and skipped. Rows written before
+    # A10 (b) carry no all-factor headroom fields and are NOT counted as done, so a
+    # stale artifact cannot masquerade as a completed sweep.
+    out_path = Path(args.out_root) / f"calibration_{spec.name}.json"
+    done: dict[tuple, dict] = {}
+    if getattr(args, "resume", False) and out_path.exists():
+        for row in json.loads(out_path.read_text()).get("results", []):
+            if "all_factor_headroom_ok" not in row:
+                continue
+            done[(row["regime"], row["probe_train_size"],
+                  row["probe_steps"], row["encoder_role"])] = row
+        print(f"[calib] resume: {len(done)} completed row(s) reusable on disk")
+
+    def _flush() -> None:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(out, indent=2))
+
     for regime, splits in regimes.items():
         for size in args.probe_train_sizes:
             for role, models in encoders.items():
+                keys = [(regime, int(size), int(s), role) for s in args.probe_steps]
+                if all(k in done for k in keys):
+                    out["results"].extend(done[k] for k in keys)
+                    print(f"[calib] {regime:15s} n={size:<6d} {role:7s} SKIP (resumed)")
+                    continue
                 # Features depend on (regime, role, seed) but not on the step budget,
                 # so the budget sweep sits inside the seed loop and re-uses them.
                 floors = {s: [] for s in args.probe_steps}
+                extra = {s: {} for s in args.probe_steps}   # per-factor floors
                 lin_closed = []
+                scored = ([f for f in spec.factors if f.name != anchor.name]
+                          if args.all_factor_floors else [])
                 for si, model in enumerate(models):
                     f = {n: _feats(model, spec, splits[n], path, device,
                                    args.batch_size, args.num_workers, args.in_memory)
@@ -168,12 +200,31 @@ def run(args) -> dict:
                     # A8 §e: same quantity, convex solver, identical features.
                     lin_closed.append(linear_recoverability_categorical(
                         Htr, ytr, Hva, yva, Hte, yte, anchor.chance)["recoverability"])
+
+                    # A10: the floor on every OTHER factor, so a pin is not made on a
+                    # readout that has headroom while the targeted ones are saturated.
+                    for fac in scored:
+                        if fac.kind == "categorical":
+                            ys = [np.rint(Y[:, fac.index]).astype(int) for Y in (Ytr, Yva, Yte)]
+                        else:
+                            ys = [Y[:, fac.index].astype(np.float32) for Y in (Ytr, Yva, Yte)]
+                        for steps in args.probe_steps:
+                            rungs = fit_ladder(Htr, ys[0], Hva, ys[1], Hte, ys[2], fac.kind,
+                                               fac.chance, seed=si, device=device,
+                                               epochs=args.epochs, steps=steps)
+                            extra[steps].setdefault(fac.name, []).append(
+                                [r["recoverability"] for r in rungs])
                     del f, Htr, Hva, Hte
 
                 closed = float(np.mean(lin_closed))
                 for steps in args.probe_steps:
                     arr = np.asarray(floors[steps])            # [S, R]
                     mean = arr.mean(0)
+                    per_factor = {n: np.asarray(v).mean(0).tolist()
+                                  for n, v in extra[steps].items()}
+                    per_factor[anchor.name] = [float(x) for x in mean]
+                    tops = {n: v[-1] for n, v in per_factor.items()}
+                    sat_top = sorted(n for n, v in tops.items() if v >= SATURATION_LEVEL)
                     row = {
                         "regime": regime,
                         "probe_train_size": int(size),
@@ -190,21 +241,29 @@ def run(args) -> dict:
                         "linear_rung_closed_form": closed,
                         "linear_rung_gap": float(closed - mean[0]),
                         "capacity_axis_flag": bool(abs(closed - mean[0]) > args.gap_tolerance),
+                        "factor_floor_mean": per_factor,
+                        "worst_top_rung_floor": float(max(tops.values())),
+                        "saturated_factors_at_top": sat_top,
+                        "all_factor_headroom_ok": bool(args.all_factor_floors and not sat_top),
                     }
                     out["results"].append(row)
                     print(f"[calib] {regime:15s} n={size:<6d} steps={steps:<5d} {role:7s} "
                           f"top-floor={row['top_rung_floor']:.4f} "
-                          f"headroom={row['headroom_at_top']:.4f} "
-                          f"lin-gap={row['linear_rung_gap']:+.4f}")
+                          f"worst-factor-floor={row['worst_top_rung_floor']:.4f} "
+                          f"lin-gap={row['linear_rung_gap']:+.4f} "
+                          f"saturated={row['saturated_factors_at_top'] or 'none'}")
+                _flush()   # checkpoint after every (regime, size, role) block
 
     # A pin requires BOTH A8 §c (measurable range at the top rung) and A8 §e (a linear
     # rung that agrees with the convex solver). The first run's selector tested only §c
     # and sorted extrapolation first, so a regime that fails by construction — and is
     # therefore never saturated — won automatically.
+    # A10: headroom is required on EVERY factor, not just the anchor.
     usable = [r for r in out["results"]
               if r["encoder_role"] == "random"
               and not r["saturated_at_top"]
-              and not r["capacity_axis_flag"]]
+              and not r["capacity_axis_flag"]
+              and (r["all_factor_headroom_ok"] or not args.all_factor_floors)]
     out["recommended_config"] = (
         min(usable, key=lambda r: (r["regime"] != "interpolation",
                                    -r["probe_train_size"], r["probe_steps"]))
@@ -218,16 +277,15 @@ def run(args) -> dict:
         and r["capacity_axis_flag"]
     ]
     out["verdict"] = (
-        "no swept configuration clears BOTH A8 §c (headroom at the top rung) and A8 §e "
-        "(linear-rung agreement within tolerance); nothing may be pinned from this run"
+        "no swept configuration clears A8 §c (headroom at the top rung, on EVERY factor "
+        "per A10) together with A8 §e (linear-rung agreement within tolerance); nothing "
+        "may be pinned from this run"
         if not usable else
         f"pin probe_train={out['recommended_config']['probe_train_size']} "
         f"steps={out['recommended_config']['probe_steps']} under the "
         f"{out['recommended_config']['regime']} regime"
     )
-    out_path = Path(args.out_root) / f"calibration_{spec.name}.json"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(out, indent=2))
+    _flush()
     print(f"[calib] {out['verdict']}\n[calib] wrote {out_path}")
     return out
 
@@ -255,6 +313,10 @@ def _main() -> None:
                     help="partner values withheld per anchor value")
     ap.add_argument("--pixel-reference", action="store_true", default=True)
     ap.add_argument("--no-pixel-reference", dest="pixel_reference", action="store_false")
+    ap.add_argument("--all-factor-floors", action="store_true", default=True,
+                    help="score the random/pixel floor on every factor, not just the "
+                         "anchor (A10). Costs one ladder fit per factor.")
+    ap.add_argument("--no-all-factor-floors", dest="all_factor_floors", action="store_false")
     ap.add_argument("--gap-tolerance", type=float, default=0.02,
                     help="A8 §e: disclose a linear-rung solver disagreement above this")
     ap.add_argument("--data-path", default=None)
@@ -264,6 +326,10 @@ def _main() -> None:
     ap.add_argument("--epochs", type=int, default=100)
     ap.add_argument("--in-memory", action="store_true")
     ap.add_argument("--out-root", default="results/calibration")
+    ap.add_argument("--resume", action="store_true",
+                    help="reuse completed (regime, size, steps, role) rows from a "
+                         "previous run's output, so a killed session continues instead "
+                         "of restarting; pre-A10 rows are never counted as complete")
     run(ap.parse_args())
 
 

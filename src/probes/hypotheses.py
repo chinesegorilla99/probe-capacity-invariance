@@ -30,6 +30,19 @@ Frozen statistical rules (prereg §4/§6/§7):
     pooled or rank-compared (FIX 1): H2 pairs are within-type only.
   * Probe-TEST recoverability only (upstream of this layer, by construction).
 
+Amendment A10 §c (2026-08-12) — the invariance boolean and the flip statistic are
+TWO-SIDED, on the training-induced deficit D = R(random) - R(trained):
+  * suppressed iff D > epsilon_D, recovered iff D <= epsilon_D, where epsilon_D is
+    the (1-alpha/2) quantile of the random-vs-random null DEFICIT distribution
+    (instrument.epsilon_d, the A8 §a estimator in the deficit direction).
+  * epsilon-invariant (H3) iff suppressed at EVERY rung; the headline
+    verdict-stability flip iff suppressed at the linear rung AND recovered at the
+    top rung. Delta_G, H1, H2, H4, S, epsilon_G, G~, the A6 null-saturation gate
+    and the A3 exclusion are unchanged.
+  * The frozen one-sided boolean (G <= epsilon_G) and both frozen flip variants
+    (primary epsilon_G, fixed 0.05) are CO-REPORTED as sensitivities in every
+    table under "*_frozen" keys, so a reader sees what the frozen rule returned.
+
 Interpretation pins (adopted into prereg text by Amendment A1, 2026-07-13):
   * H1's "> epsilon_G" threshold for Delta_G uses the same CI-of-mean estimator
     applied to the random-vs-random null of the capacity gap itself
@@ -58,10 +71,14 @@ from .instrument import (
     RUNG_NAMES,
     SATURATION_LEVEL,
     _boot_mean_ci,
+    _deficit_flip_mask,
+    _frozen_flip_mask,
     build_report,
+    epsilon_d,
     epsilon_g,
     flip_bootstrap,
     null_saturation,
+    paired_deficit,
     paired_gain,
     selectivity,
 )
@@ -131,7 +148,7 @@ def _apply_q16(report: dict, h1: dict, h2: dict, h3: dict, diag_names: set[str])
     if not diag_names:
         return
     report["diagnostic_only_factors"] = sorted(diag_names)
-    for key in ("flips_primary", "flips_fixed_0.05"):
+    for key in ("flips_two_sided", "flips_primary", "flips_fixed_0.05"):
         fl = report[key]
         fl["flipped_factors"] = [f for f in fl["flipped_factors"] if f not in diag_names]
         fl["n_flips"] = len(fl["flipped_factors"])
@@ -140,15 +157,20 @@ def _apply_q16(report: dict, h1: dict, h2: dict, h3: dict, diag_names: set[str])
                                           if f not in diag_names]
     h1["confirmed"] = bool(h1["confirmed_factors"])
     h2["pairs"] = [p for p in h2["pairs"] if not (set(p["pair"]) & diag_names)]
-    h3["confirmed_factors"] = [f for f in h3["confirmed_factors"] if f not in diag_names]
+    for key in ("confirmed_factors", "confirmed_factors_frozen"):
+        h3[key] = [f for f in h3[key] if f not in diag_names]
     h3["confirmed"] = bool(h3["confirmed_factors"])
+    h3["confirmed_frozen"] = bool(h3["confirmed_factors_frozen"])
     for rows in (h1["per_factor"], h3["per_factor"]):
         for row in rows:
             if row["factor"] in diag_names:
                 row["diagnostic_only"] = True
 
 
-_INVARIANT_CASES = {"invariant", "suppressed"}
+# Frozen §4 case labels that read as "invariant" under the SUPERSEDED one-sided
+# rule; retained for the co-reported sensitivity verdict only (A10 §c). The
+# primary cases are the two-sided pair {"suppressed", "recovered"}.
+_FROZEN_INVARIANT_CASES = {"invariant", "suppressed"}
 
 
 @dataclass(frozen=True)
@@ -364,6 +386,7 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
     # Per-seed paired quantities. All CIs below resample the same n-seed axis
     # with instrument's common bootstrap rng -> shared draws across gates.
     g = cell.trained - cell.random_stats[:n]     # per-seed G [n,F,R]
+    dfc = cell.random_stats[:n] - cell.trained   # per-seed deficit D = -G (A10 §c)
     dg = g[:, :, -1] - g[:, :, 0]                # per-seed capacity gap [n,F]
     # H4 = paired G(enc) - G(proj) (prereg §6). The floor does NOT cancel: h is 512-d
     # and z is 128-d, so each axis needs its own untrained baseline (A8 §d).
@@ -377,9 +400,12 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
             "is an uncorrected 512-d vs 128-d level difference — re-sweep to fix.")
 
     G = paired_gain(cell.trained, cell.random_stats, n_boot=n_boot)
+    D = paired_deficit(cell.trained, cell.random_stats, n_boot=n_boot)   # A10 §c
     S = selectivity(cell.trained, cell.perm, n_boot=n_boot)
     eps = epsilon_g(cell.random_stats, n_boot=n_boot)
     eps_used = np.where(np.isnan(eps), EPS_FIXED, eps)
+    eps_d = epsilon_d(cell.random_stats, n_boot=n_boot)                  # A10 §c
+    eps_d_used = np.where(np.isnan(eps_d), EPS_FIXED, eps_d)
 
     report = build_report(cell.trained, cell.random_stats, cell.trained, cell.perm,
                           factors=cell.factors, eps_boot=n_boot)
@@ -421,13 +447,22 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
     conf_factors = tuple(f for f in cell.factors if f.name not in diag_names)  # Q16 / A3
     excl = conf & ~sat_flip                                                    # A4
     excl_factors = tuple(f for fi, f in enumerate(cell.factors) if excl[fi])
-    variants = [("primary", eps_used, conf, conf_factors),
-                ("fixed_0.05", np.full_like(eps_used, EPS_FIXED), conf, conf_factors),
-                ("primary_excl_null_saturated", eps_used, excl, excl_factors),
-                ("fixed_0.05_excl_null_saturated", np.full_like(eps_used, EPS_FIXED),
-                 excl, excl_factors)]
-    for key, eps_arr, mask, facs in variants:
-        fb = flip_bootstrap(g[:, mask], eps_arr[mask], n_boot=n_boot, factors=facs)
+    eps_fix = np.full_like(eps_used, EPS_FIXED)
+    variants = [
+        # A10 §c primary: suppressed at the linear rung AND recovered at the top,
+        # read off the per-seed DEFICIT stack against epsilon_D.
+        ("two_sided", dfc, eps_d_used, conf, conf_factors, _deficit_flip_mask),
+        ("two_sided_excl_null_saturated", dfc, eps_d_used, excl, excl_factors,
+         _deficit_flip_mask),
+        # frozen §4/§6 sensitivities: the one-sided boolean changing either way.
+        ("primary", g, eps_used, conf, conf_factors, _frozen_flip_mask),
+        ("fixed_0.05", g, eps_fix, conf, conf_factors, _frozen_flip_mask),
+        ("primary_excl_null_saturated", g, eps_used, excl, excl_factors, _frozen_flip_mask),
+        ("fixed_0.05_excl_null_saturated", g, eps_fix, excl, excl_factors, _frozen_flip_mask),
+    ]
+    for key, stat, eps_arr, mask, facs, rule in variants:
+        fb = flip_bootstrap(stat[:, mask], eps_arr[mask], n_boot=n_boot,
+                            factors=facs, rule=rule)
         flip_draws[key] = fb.pop("_draws")
         flip_unc[key] = fb
 
@@ -486,11 +521,15 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
         "pairs": h2_pairs,
     }
 
-    # H3 — genuine invariance: the §4 point boolean at every rung; suppressed
-    # (G<0) and the §6 +-epsilon noise band reported distinctly.
+    # H3 — genuine invariance. PRIMARY (A10 §c): epsilon-invariant iff SUPPRESSED at
+    # EVERY rung, i.e. the training-induced deficit D exceeds epsilon_D throughout.
+    # A readout merely sitting AT the untrained floor did nothing to the factor and
+    # is "recovered", not invariant — the case the frozen one-sided boolean pooled
+    # in. That frozen boolean, its sub-cases and the §6 noise band are co-reported.
     h3_rows = []
     for fi, fac in enumerate(cell.factors):
-        inv_point = G["mean"][fi] <= eps_used[fi]
+        supp_rung = D["mean"][fi] > eps_d_used[fi]                  # A10 §c primary
+        inv_point = G["mean"][fi] <= eps_used[fi]                   # frozen §4
         band = (G["lo"][fi] >= -eps_used[fi]) & (G["hi"][fi] <= eps_used[fi])
         supp = inv_point & (G["mean"][fi] < 0)
         all_inv = bool(inv_point.all())
@@ -500,6 +539,14 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
                        else "noise_band" if band.all() else "mixed")
         h3_rows.append({
             "factor": fac.name,
+            # --- A10 §c primary
+            "eps_invariant": bool(supp_rung.all()),
+            "suppressed_by_rung": [bool(b) for b in supp_rung],
+            "deficit_by_rung": [float(x) for x in D["mean"][fi]],
+            "deficit_ci_by_rung": [[float(lo), float(hi)]
+                                   for lo, hi in zip(D["lo"][fi], D["hi"][fi])],
+            "epsilon_d_by_rung": [float(x) for x in eps_d_used[fi]],
+            # --- frozen §4 boolean, co-reported as sensitivity
             "invariant_all_rungs": all_inv,
             "invariant_all_rungs_fixed_0.05": bool((G["mean"][fi] <= EPS_FIXED).all()),
             "subcase": subcase,
@@ -514,18 +561,27 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
     # set (the A3 vacuity logic applied to saturation instead of non-identifiability)
     # and retained as a distinct, tagged diagnostic list. No other rule is touched.
     h3_confirmed = [r["factor"] for r in h3_rows
-                    if r["invariant_all_rungs"] and not r["null_saturated"]]
+                    if r["eps_invariant"] and not r["null_saturated"]]
     h3_vacuous = [r["factor"] for r in h3_rows
-                  if r["invariant_all_rungs"] and r["null_saturated"]]
+                  if r["eps_invariant"] and r["null_saturated"]]
+    h3_confirmed_frozen = [r["factor"] for r in h3_rows
+                           if r["invariant_all_rungs"] and not r["null_saturated"]]
+    h3_vacuous_frozen = [r["factor"] for r in h3_rows
+                         if r["invariant_all_rungs"] and r["null_saturated"]]
     h3 = {
-        "rule": "G(F,c) <= epsilon_G at EVERY rung for >=1 NON-null-saturated factor "
-                "(§4 point boolean; A6 gates out saturated readouts — vacuous for want "
-                "of floor headroom); suppressed sub-case reported distinctly; CI-in-band "
-                "co-reported (prereg §6 H3 + A6)",
+        "rule": "A10 §c PRIMARY: D(F,c) = R(random) - R(trained) > epsilon_D at EVERY "
+                "rung for >=1 NON-null-saturated factor (A6 gates out saturated "
+                "readouts — vacuous for want of floor headroom). The frozen one-sided "
+                "rule (G <= epsilon_G at every rung), its suppressed sub-case and the "
+                "§6 CI-in-band diagnostic are co-reported as sensitivities "
+                "(prereg §6 H3 + A6 + A10 §c)",
         "per_factor": h3_rows,
         "confirmed_factors": h3_confirmed,
         "invariant_but_null_saturated": h3_vacuous,   # A6: retained, NOT confirmatory
         "confirmed": bool(h3_confirmed),
+        "confirmed_factors_frozen": h3_confirmed_frozen,          # frozen sensitivity
+        "invariant_but_null_saturated_frozen": h3_vacuous_frozen,
+        "confirmed_frozen": bool(h3_confirmed_frozen),
     }
 
     # H4 — encoder-vs-projector: per-seed G(enc)-G(proj) = R(h)-R(projector)
@@ -561,7 +617,7 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
     # A4 saturation-excluded flip lists, derived from the (q16-filtered) primary
     # lists so both exclusions compose; additive reporting only.
     sat_names = set(null_sat["saturated_factors_flip"])
-    for key in ("flips_primary", "flips_fixed_0.05"):
+    for key in ("flips_two_sided", "flips_primary", "flips_fixed_0.05"):
         fl = report[key]
         kept = [f for f in fl["flipped_factors"] if f not in sat_names]
         report[key + "_excl_null_saturated"] = {
@@ -622,10 +678,21 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
 
 # --- study-level assembly (prereg §6 confirm/refute table) ---------------------
 
+def _verdict_label_two_sided(case_lin: str, case_top: str) -> str:
+    """PRIMARY verdict (A10 §c) from the two-sided deficit cases at both endpoints."""
+    if case_lin == "suppressed":
+        return ("suppressed_across_ladder" if case_top == "suppressed"
+                else "linear_invariance_artifact")
+    if case_top == "recovered":
+        return "recovered_at_all_capacities"
+    return f"other({case_lin}->{case_top})"
+
+
 def _verdict_label(case_lin: str, case_top: str) -> str:
-    if case_lin in _INVARIANT_CASES and case_top == "genuine":
+    """FROZEN one-sided verdict — co-reported sensitivity only since A10 §c."""
+    if case_lin in _FROZEN_INVARIANT_CASES and case_top == "genuine":
         return "linear_invariance_artifact"
-    if case_lin in _INVARIANT_CASES and case_top in _INVARIANT_CASES:
+    if case_lin in _FROZEN_INVARIANT_CASES and case_top in _FROZEN_INVARIANT_CASES:
         return "invariant_across_ladder"
     if case_lin == "genuine" and case_top == "genuine":
         return "recovered_at_all_capacities"
@@ -645,6 +712,11 @@ def _headline_contrast(table: list[dict]) -> dict:
     return {
         "object_hue_color": hue["verdict"] if hue else "pending (color cell absent)",
         "position_crop": [t["verdict"] for t in pos] if pos else "pending (position cell absent)",
+        # frozen one-sided reading alongside the A10 §c primary
+        "object_hue_color_frozen": (hue["verdict_frozen"] if hue
+                                    else "pending (color cell absent)"),
+        "position_crop_frozen": ([t["verdict_frozen"] for t in pos] if pos
+                                 else "pending (position cell absent)"),
         "complete": bool(hue and pos),
     }
 
@@ -763,33 +835,60 @@ def assemble(results: list[dict], alpha: float = ALPHA) -> dict:
     # readout's G<=eps is vacuous (no floor headroom), so it cannot source a
     # "genuine invariance" verdict — dropped from the confirmed set, kept as a tagged
     # diagnostic list. Composes with the Q16/A3 non-identifiability exclusion.
+    def h3_rows_where(pred):
+        return [[r["cell"], row["factor"]] for r in results
+                for row in r["h3"]["per_factor"]
+                if pred(row) and not row.get("diagnostic_only")]   # Q16 / A3
+
     h3_conf = [[r["cell"], row["factor"], row["subcase"]] for r in results
                for row in r["h3"]["per_factor"]
-               if row["invariant_all_rungs"] and not row.get("diagnostic_only")  # Q16 / A3
-               and not row.get("null_saturated")]                               # A6
-    h3_vacuous = [[r["cell"], row["factor"]] for r in results
-                  for row in r["h3"]["per_factor"]
-                  if row["invariant_all_rungs"] and row.get("null_saturated")
-                  and not row.get("diagnostic_only")]
+               if row["eps_invariant"] and not row.get("diagnostic_only")   # A10 §c, Q16
+               and not row.get("null_saturated")]                           # A6
+    h3_vacuous = h3_rows_where(lambda row: row["eps_invariant"] and row["null_saturated"])
+    h3_conf_frozen = h3_rows_where(
+        lambda row: row["invariant_all_rungs"] and not row["null_saturated"])
+    h3_vacuous_frozen = h3_rows_where(
+        lambda row: row["invariant_all_rungs"] and row["null_saturated"])
     h3 = {
-        "statement": "some NON-null-saturated factor stays epsilon_G-invariant at every capacity",
+        "statement": "some NON-null-saturated factor stays epsilon-invariant (SUPPRESSED, "
+                     "D > epsilon_D) at every capacity",
         "confirmed_cells_factors": h3_conf,
         "invariant_but_null_saturated": h3_vacuous,   # A6: retained, non-confirmatory
+        "status": "confirmed" if h3_conf else "refuted",
+        # frozen one-sided sensitivity, co-reported per A10 §c
+        "confirmed_cells_factors_frozen": h3_conf_frozen,
+        "invariant_but_null_saturated_frozen": h3_vacuous_frozen,
+        "status_frozen": "confirmed" if h3_conf_frozen else "refuted",
         "confirmed_fixed_0.05": [[r["cell"], row["factor"]] for r in results
                                  for row in r["h3"]["per_factor"]
                                  if row["invariant_all_rungs_fixed_0.05"]
                                  and not row.get("diagnostic_only")
                                  and not row.get("null_saturated")],
-        "status": "confirmed" if h3_conf else "refuted",
-        "note": "A6 null-saturation gate applied; suppressed (G<0 everywhere) and "
-                "noise-band sub-cases reported distinctly; invariant-but-saturated "
-                "readouts listed separately as non-confirmatory diagnostics",
+        "note": "A10 §c primary: epsilon-invariance requires a training-induced deficit "
+                "above the random-vs-random null at every rung; a readout sitting AT the "
+                "untrained floor is 'recovered', not invariant. A6 null-saturation gate "
+                "applied unchanged; the frozen one-sided rule and its suppressed / "
+                "noise-band sub-cases are co-reported",
     }
     if h3_vacuous:
-        notes.append(f"H3 (A6): {len(h3_vacuous)} invariant readout(s) "
+        notes.append(f"H3 (A6): {len(h3_vacuous)} epsilon-invariant readout(s) "
                      f"{[f'{c}:{f}' for c, f in h3_vacuous]} are NULL-SATURATED and "
                      "EXCLUDED from the genuine-invariance verdict as vacuous (random "
                      "floor near ceiling; no headroom) — retained as diagnostics")
+    if h3_vacuous_frozen:
+        notes.append(f"H3 (A6, frozen sensitivity): {len(h3_vacuous_frozen)} readout(s) "
+                     f"{[f'{c}:{f}' for c, f in h3_vacuous_frozen]} are invariant under "
+                     "the frozen one-sided rule AND NULL-SATURATED — excluded from that "
+                     "sensitivity's confirmed set as vacuous (random floor near ceiling, "
+                     "no headroom for G to exceed epsilon_G)")
+    frozen_only = [f"{c}:{f}" for c, f in h3_conf_frozen
+                   if [c, f] not in [[cc, ff] for cc, ff, _ in h3_conf]]
+    if frozen_only:
+        notes.append(f"H3 (A10 §c): {len(frozen_only)} readout(s) {frozen_only} are "
+                     "invariant under the FROZEN one-sided rule but not under the "
+                     "two-sided primary — they sit at the untrained floor rather than "
+                     "below it, so they are 'recovered', not suppressed. Both readings "
+                     "are reported; the primary is the two-sided one")
 
     # H4 — sign component (Holm across cells) + widening component.
     h4_rows = [dict(cell=r["cell"], **t) for r in results for t in r["h4"]["tests"]]
@@ -835,23 +934,37 @@ def assemble(results: list[dict], alpha: float = ALPHA) -> dict:
         return {"n_flips": len(rows), "flips": rows}
 
     headline = {
+        # A10 §c primary: suppressed at linear AND recovered at top
+        "two_sided": flips("flips_two_sided"),
+        "two_sided_excl_null_saturated": flips("flips_two_sided_excl_null_saturated"),
+        # frozen one-sided sensitivities (A4/A6), co-reported forever
         "primary": flips("flips_primary"),
         "fixed_0.05": flips("flips_fixed_0.05"),
         "primary_excl_null_saturated": flips("flips_primary_excl_null_saturated"),
         "fixed_0.05_excl_null_saturated": flips("flips_fixed_0.05_excl_null_saturated"),
     }
     headline["headline_for_claims"] = {
-        "variant": "primary_excl_null_saturated",
-        "n_flips": headline["primary_excl_null_saturated"]["n_flips"],
-        "note": "A6: the flip count quoted in prose is the null-saturation-excluded "
-                "primary variant; the all-factor primary and fixed-0.05 sensitivity "
-                "are co-reported (A4). Quote them together, never the primary alone.",
+        "variant": "two_sided_excl_null_saturated",
+        "n_flips": headline["two_sided_excl_null_saturated"]["n_flips"],
+        "note": "A10 §c: the flip count quoted in prose is the TWO-SIDED deficit flip "
+                "(suppressed at the linear rung, recovered at the top), with the A6 "
+                "null-saturation exclusion still applied. The frozen one-sided flip "
+                "variants (primary epsilon_G and fixed 0.05, each all-factor and "
+                "saturation-excluded) are co-reported as sensitivities. Quote them "
+                "together, never one alone.",
     }
+    n_ts = headline["two_sided_excl_null_saturated"]["n_flips"]
+    n_frozen = headline["primary_excl_null_saturated"]["n_flips"]
+    if n_ts != n_frozen:
+        notes.append(f"headline flip count (A10 §c): two-sided primary = {n_ts}, frozen "
+                     f"one-sided sensitivity = {n_frozen}; both are reported and any "
+                     "headline sentence quotes them together")
 
     # Study-level flip uncertainty (A1 §c): cells resample independently, the
     # per-draw counts sum across cells.
     uncertainty = {}
-    for key in ("primary", "fixed_0.05",
+    for key in ("two_sided", "two_sided_excl_null_saturated",
+                "primary", "fixed_0.05",
                 "primary_excl_null_saturated", "fixed_0.05_excl_null_saturated"):
         draws = [r.get("_flip_draws", {}).get(key) for r in results]
         if draws and all(d is not None for d in draws):
@@ -868,20 +981,27 @@ def assemble(results: list[dict], alpha: float = ALPHA) -> dict:
     # Genuine-vs-artifact verdict table per (condition, factor).
     table = []
     for r in results:
+        flipped_ts = set(r["report"]["flips_two_sided"]["flipped_factors"])   # A10 §c
         flipped_p = set(r["report"]["flips_primary"]["flipped_factors"])
         flipped_f = set(r["report"]["flips_fixed_0.05"]["flipped_factors"])
         diag = set(r["report"].get("diagnostic_only_factors", []))   # Q16 / A3
         satset = set(r.get("null_saturation", {}).get("saturated_factors_flip", []))  # A4
         for fname, rows in r["report"]["table"].items():
-            case_lin, case_top = rows[0]["case"], rows[-1]["case"]
+            case_lin, case_top = rows[0]["case_two_sided"], rows[-1]["case_two_sided"]
+            frozen_lin, frozen_top = rows[0]["case"], rows[-1]["case"]
             table.append({
                 "cell": r["cell"],
                 "factor": fname,
                 "case_linear": case_lin,
                 "case_top": case_top,
+                "flip_two_sided": fname in flipped_ts,
+                "verdict": _verdict_label_two_sided(case_lin, case_top),
+                # frozen one-sided reading, co-reported per A10 §c
+                "case_linear_frozen": frozen_lin,
+                "case_top_frozen": frozen_top,
                 "flip_primary": fname in flipped_p,
                 "flip_fixed_0.05": fname in flipped_f,
-                "verdict": _verdict_label(case_lin, case_top),
+                "verdict_frozen": _verdict_label(frozen_lin, frozen_top),
                 "diagnostic_only": fname in diag,
                 "null_saturated": fname in satset,
             })
@@ -994,9 +1114,13 @@ def _main() -> None:
     print(f"[hyp] wrote {out} ({len(results)} cell(s); "
           f"provisional={study['provisional']}, missing={study['missing_expected_cells']})")
     for name in ("H1", "H2", "H3", "H4"):
-        print(f"[hyp]   {name}: {hs[name]['status']}")
+        print(f"[hyp]   {name}: {hs[name]['status']}", end="")
+        print(f" (frozen one-sided: {hs[name]['status_frozen']})"
+              if "status_frozen" in hs[name] else "")
     hl = study["headline_flip_count"]
-    print(f"[hyp]   flips: primary={hl['primary']['n_flips']} "
+    print(f"[hyp]   flips (A10 §c two-sided PRIMARY): all={hl['two_sided']['n_flips']} "
+          f"excl-null-saturated={hl['two_sided_excl_null_saturated']['n_flips']}")
+    print(f"[hyp]   flips (frozen one-sided sensitivity): primary={hl['primary']['n_flips']} "
           f"fixed_0.05={hl['fixed_0.05']['n_flips']} | excl-null-saturated: "
           f"primary={hl['primary_excl_null_saturated']['n_flips']} "
           f"fixed_0.05={hl['fixed_0.05_excl_null_saturated']['n_flips']}")

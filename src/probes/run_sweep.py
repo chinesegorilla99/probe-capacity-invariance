@@ -37,7 +37,7 @@ from pathlib import Path
 import numpy as np
 
 from ..data.registry import get_dataset
-from ..data.splits import make_splits
+from ..data.splits import make_combination_holdout_splits, make_splits
 from ..encoders.augmentations import eval_transform
 from ..encoders.random_encoder import build_random_backbone_projector
 from ..eval.encoder_gate import gate_summary, per_seed_gate
@@ -49,7 +49,7 @@ from ..eval.extract import (
 from ..utils.config import load_config
 from ..utils.device import pick_device
 from .instrument import stack_runs
-from .ladder import DEFAULT_STEPS, LADDER, param_count
+from .ladder import DEFAULT_STEPS, INSTRUMENT_VERSION, LADDER, param_count
 
 RUNG_NAMES = tuple(r.name for r in LADDER)
 
@@ -93,6 +93,29 @@ def run(args) -> dict:
     bs, nw = args.batch_size, args.num_workers
     path = args.data_path or spec.default_path
     splits = make_splits(spec.n_total, cfg["split"]["sizes"], cfg["split"]["split_seed"])
+    # Probe-test regime. "interpolation" is the frozen §0 split: a complete factorial
+    # grid split by random index, so probe-test is dense lattice interpolation. The
+    # composition regime withholds factor COMBINATIONS instead, and adopting it changes
+    # the estimand to compositional generalization — which is why it needs its own dated
+    # amendment (A10 b names it as the declared fallback) and is never the default.
+    if args.regime == "composition":
+        anchor = next(f for f in spec.factors if f.kind == "categorical")
+        partner = (next(f for f in spec.factors if f.name == args.partner_factor)
+                   if args.partner_factor else
+                   max((f for f in spec.factors if f.name != anchor.name),
+                       key=lambda f: f.n_values))
+        ds_all = spec.cls(np.arange(spec.n_total), transform=None, path=path,
+                          return_label=True)
+        labels_all = np.asarray(ds_all.labels)
+        del ds_all
+        splits = make_combination_holdout_splits(
+            labels_all, anchor.index, partner.index, base=splits,
+            n_holdout=args.n_holdout_partner, split_seed=cfg["split"]["split_seed"])
+        print(f"[sweep] COMPOSITION regime: withholding {args.n_holdout_partner} "
+              f"'{partner.name}' values per '{anchor.name}' value — "
+              f"{len(splits['probe_test'])} probe-test images. The estimand is "
+              f"compositional generalization, NOT lattice interpolation; results are "
+              f"not comparable to any interpolation number.")
     split_names = ("probe_train", "probe_val", "probe_test")
     datasets = {
         name: spec.cls(splits[name], transform=eval_transform(), path=path,
@@ -127,8 +150,13 @@ def run(args) -> dict:
     # Rows are cached per seed, but they are only valid for the probe config that
     # produced them, so the config tags the directory: re-running at a different
     # probe-train size or step budget starts a fresh cache instead of silently
-    # mixing budgets, and re-running the same config still resumes.
-    cfg_tag = f"n{args.subsample or 'full'}_s{args.probe_steps}"
+    # mixing budgets, and re-running the same config still resumes. The instrument
+    # version is part of the tag too: A10 (a) voided every continuous readout
+    # computed before the target-standardization repair, and those caches sit at the
+    # same (n, steps) the repaired sweep re-runs at, so without this a --resume would
+    # silently reload void numbers instead of recomputing them.
+    cfg_tag = (f"v{INSTRUMENT_VERSION}_{args.regime}_"
+               f"n{args.subsample or 'full'}_s{args.probe_steps}")
     cache_dir = (Path(args.out_root) / f"{args.condition}_{args.strength}" / "_cache" / cfg_tag
                  if args.resume else None)
     if cache_dir is not None:
@@ -253,6 +281,8 @@ def run(args) -> dict:
         "probe_train_size": int(len(datasets["probe_train"]) if not args.subsample
                                 else args.subsample),
         "probe_steps": int(args.probe_steps),
+        "probe_regime": args.regime,   # which estimand produced this cell
+
         "quality_gate": gate,
         "schema": {
             "stacks.npz": {
@@ -292,6 +322,15 @@ def _main() -> None:
     ap.add_argument("--subsample", type=int, default=0, help="cap probe_train (0 = full/fixed)")
     ap.add_argument("--in-memory", action="store_true")
     ap.add_argument("--out-root", default="results/probes")
+    ap.add_argument("--regime", default="interpolation",
+                    choices=["interpolation", "composition"],
+                    help="probe-test split. 'composition' withholds factor "
+                         "COMBINATIONS and CHANGES THE ESTIMAND to compositional "
+                         "generalization; it requires its own dated prereg amendment")
+    ap.add_argument("--partner-factor", default=None,
+                    help="composition regime: factor withheld per anchor value")
+    ap.add_argument("--n-holdout-partner", type=int, default=3,
+                    help="composition regime: partner values withheld per anchor value")
     ap.add_argument("--resume", action="store_true",
                     help="cache per-seed probe rows under <out>/_cache and reload them "
                          "on re-run (resume a session-killed probe)")

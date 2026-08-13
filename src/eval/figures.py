@@ -47,7 +47,8 @@ SURFACE, INK, INK2, MUTED = "#fcfcfb", "#0b0b0b", "#52514e", "#898781"
 GRID, BASELINE, CRITICAL = "#e1e0d9", "#c3c2b7", "#d03b3b"
 
 VERDICT_STYLE = {  # verdict class -> (fill, short label)
-    "invariant_across_ladder": (BLUE, "invariant"),
+    "suppressed_across_ladder": (BLUE, "suppressed"),      # A10 §c epsilon-invariant
+    "invariant_across_ladder": (BLUE, "invariant"),        # frozen one-sided reading
     "linear_invariance_artifact": (ORANGE, "artifact (flip)"),
     "recovered_at_all_capacities": (AQUA, "recovered"),
     "inconclusive_probe_driven": (GRID, "inconclusive"),
@@ -268,12 +269,15 @@ def fig_verdicts(study, out: Path, synthetic: bool) -> None:
                     fontsize=7, color=_text_on(fill))
             csv_rows.append({"factor": fname, "cell": cname, "verdict": t["verdict"],
                              "case_linear": t["case_linear"], "case_top": t["case_top"],
+                             "flip_two_sided": t["flip_two_sided"],
+                             # frozen one-sided sensitivity (A10 §c)
+                             "verdict_frozen": t["verdict_frozen"],
                              "flip_primary": t["flip_primary"]})
     for xi, cname in enumerate(cols):
         ax.text(xi + 0.5, -0.15, cname, ha="center", va="bottom",
                 color=INK, fontsize=8, fontweight="bold")
-    n_flips = study["headline_flip_count"]["primary"]["n_flips"]
-    ax.set_title(f"Verdicts per (factor, cell) — {n_flips} primary flip(s)"
+    n_flips = study["headline_flip_count"]["two_sided"]["n_flips"]
+    ax.set_title(f"Verdicts per (factor, cell) — {n_flips} two-sided flip(s)"
                  + (" · provisional grid" if study["provisional"] else ""),
                  loc="left", fontsize=9.5, fontweight="bold", color=INK, pad=24)
     _stamp(fig, synthetic)

@@ -61,6 +61,13 @@ DEFAULT_LR = 1e-3
 # sweeps used, so results at that size are unchanged.
 DEFAULT_STEPS = 1000
 
+# Bumped whenever a change here invalidates previously computed recoverability.
+# run_sweep folds it into its resume-cache key, so a cache written by an older,
+# defective instrument can never be silently reloaded at a matching (n, steps).
+# "a10": target standardization + bias weight-decay exemption (prereg A10 a),
+# which voided every continuous readout computed before 2026-08-12.
+INSTRUMENT_VERSION = "a10"
+
 
 class MLPProbe(nn.Module):
     def __init__(self, in_dim: int, hidden: tuple[int, ...], out_dim: int):
@@ -93,6 +100,20 @@ def _standardize(Xtr, *others):
     return [(X - mu) / sd for X in (Xtr, *others)]
 
 
+def _standardize_targets(ytr, *others):
+    """Center/scale a continuous target on probe-train statistics.
+
+    R^2 is invariant under an affine map applied to both target and prediction, so
+    the reported metric is unchanged. Without this the probe must reach the target
+    mean through an output bias that starts near zero and is weight-decayed, which
+    the step budget cannot do when the mean is large relative to the spread. The
+    linear rung suffers most, inflating the capacity gap.
+    """
+    ytr = np.asarray(ytr, np.float32)
+    mu, sd = float(ytr.mean()), float(ytr.std()) + 1e-6
+    return [(np.asarray(y, np.float32) - mu) / sd for y in (ytr, *others)]
+
+
 def _train_one(
     rung, Xtr, ytr, Xva, yva, Xte, yte, kind, out_dim, in_dim, wd, seed, device, epochs, batch, lr,
     steps=DEFAULT_STEPS,
@@ -100,7 +121,13 @@ def _train_one(
     """Train one probe at a fixed weight decay; return (val_metric, test_metric)."""
     seed_everything(seed)
     probe = MLPProbe(in_dim, rung.hidden, out_dim).to(device)
-    opt = torch.optim.Adam(probe.parameters(), lr=lr, weight_decay=wd)
+    # Biases are exempt from weight decay: decaying the output bias penalizes the
+    # probe for representing the target mean, and does so unevenly across rungs.
+    decay = [p for n, p in probe.named_parameters() if not n.endswith("bias")]
+    plain = [p for n, p in probe.named_parameters() if n.endswith("bias")]
+    opt = torch.optim.Adam(
+        [{"params": decay, "weight_decay": wd}, {"params": plain, "weight_decay": 0.0}], lr=lr
+    )
     loss_fn = nn.CrossEntropyLoss() if kind == "categorical" else nn.MSELoss()
 
     Xtr_t = torch.as_tensor(Xtr, dtype=torch.float32, device=device)
@@ -161,6 +188,8 @@ def fit_rung(
     out_dim = round(1.0 / chance) if kind == "categorical" else 1  # n_classes = 1/chance
     Xtr, Xva, Xte = _standardize(np.asarray(Xtr, np.float32),
                                  np.asarray(Xva, np.float32), np.asarray(Xte, np.float32))
+    if kind != "categorical":
+        ytr, yva, yte = _standardize_targets(ytr, yva, yte)
     in_dim = Xtr.shape[1]
 
     best = {"val": -np.inf}

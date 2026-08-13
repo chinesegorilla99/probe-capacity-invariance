@@ -1,8 +1,9 @@
-"""End-to-end two-world validation of the frozen H1-H4 decision procedure.
+"""End-to-end three-world validation of the H1-H4 decision procedure.
 
-Emits the full first-slice grid under both hand-set ground truths (null /
-artifact, src/probes/synthetic.py) at the sweep seed count (12, D025) and
-asserts the UNCHANGED stats layer recovers each world's truth — including H2's
+Emits the full first-slice grid under every hand-set ground truth (null /
+suppressed / artifact, src/probes/synthetic.py) at the sweep seed count (12,
+D025) and asserts the stats layer recovers each world's truth under BOTH the
+A10 §c two-sided primary and the frozen one-sided sensitivity — including H2's
 Wilcoxon x Holm floor calibration at n=10 vs n=12 (Q15, recalibrated by A3's
 family narrowing; checked both ways here).
 Complements tests/test_hypotheses.py (per-cell unit tests) at the
@@ -45,28 +46,42 @@ class TestSyntheticWorlds(unittest.TestCase):
 
     def test_fixtures_are_tagged_synthetic(self):
         metas = list(Path(self.tmp).glob("*/*/meta.json"))
-        self.assertEqual(len(metas), 6)  # 3 cells x 2 worlds
+        self.assertEqual(len(metas), 3 * len(WORLDS))  # 3 cells x 3 worlds
         for m in metas:
             meta = json.loads(m.read_text())
             self.assertIn("synthetic_world", meta)
             self.assertEqual(len(meta["seeds"]["trained"]), N_SEEDS)
         self.assertTrue((Path(self.tmp) / "README.md").exists())
 
-    def test_null_world_recovered(self):
-        self.assertEqual(self.fails["null"], [])
-
-    def test_artifact_world_recovered(self):
-        self.assertEqual(self.fails["artifact"], [])
+    def test_every_world_recovered(self):
+        for w in WORLDS:
+            self.assertEqual(self.fails[w], [], f"world {w}")
 
     def test_worlds_are_distinguished(self):
-        # the same frozen procedure must give opposite answers per world
+        # the same procedure must give opposite answers per world
         h = {w: self.studies[w]["hypotheses"] for w in WORLDS}
-        for hyp in ("H1", "H2", "H3"):
+        for hyp in ("H1", "H2"):
             self.assertNotEqual(h["null"][hyp]["status"], h["artifact"][hyp]["status"])
-        flips = {w: self.studies[w]["headline_flip_count"]["primary"]["n_flips"]
+        flips = {w: self.studies[w]["headline_flip_count"]["two_sided"]["n_flips"]
                  for w in WORLDS}
         self.assertEqual(flips["null"], 0)
+        self.assertEqual(flips["suppressed"], 0)
         self.assertEqual(flips["artifact"], 5)
+
+    def test_h3_separates_riding_the_floor_from_real_suppression(self):
+        # A10 §c: the primary rule confirms genuine invariance ONLY where training
+        # pushed the factor below the untrained floor. The frozen one-sided rule
+        # pooled "did nothing" with "suppressed", so it confirms in both worlds —
+        # exactly the conflation the two-sided repair removes.
+        h3 = {w: self.studies[w]["hypotheses"]["H3"] for w in WORLDS}
+        self.assertEqual(h3["null"]["status"], "refuted")
+        self.assertEqual(h3["suppressed"]["status"], "confirmed")
+        self.assertEqual(h3["artifact"]["status"], "refuted")
+        self.assertEqual(h3["null"]["status_frozen"], "confirmed")
+        self.assertEqual(h3["suppressed"]["status_frozen"], "confirmed")
+        # and the disagreement is disclosed rather than silent
+        self.assertTrue(any("FROZEN one-sided rule" in n
+                            for n in self.studies["null"]["notes"]))
 
     def test_h2_decidable_at_sweep_seed_count(self):
         # D025: at n=12 the true heterogeneity clears the assembled Holm family
