@@ -22,7 +22,9 @@ from src.probes.displacement import (
     grid_index,
     sample_contexts,
     spectrum_stats,
+    shared_direction_fraction,
     sweep_rows,
+    displacement_scale,
     whitener,
 )
 
@@ -181,6 +183,58 @@ class TestMonotonicity(unittest.TestCase):
         self.assertLess(fold["monotonicity"]["monotone_fraction"], 0.05)
         self.assertGreater(mono["monotonicity"]["mean_abs_spearman"], 0.99)
         self.assertLess(fold["monotonicity"]["mean_abs_spearman"], 0.6)
+
+
+class TestDestructionScale(unittest.TestCase):
+    """A12: the certificate needs an ABSOLUTE scale. A11 (b)'s deficit against the random
+    encoder certified reduction, not destruction — these fixtures pin the difference.
+
+    After whitening the embedding has unit variance in every direction, so a whitened
+    displacement is measured in standard deviations of the representation itself. A probe
+    picks its own direction, so that, not a variance share over all dimensions, is what
+    bounds it.
+    """
+
+    @staticmethod
+    def _field(scale, d=32, n_ctx=200, n_steps=4):
+        u = np.zeros(d); u[0] = 1.0
+        return np.ones((n_ctx, n_steps, 1)) * u[None, None, :] * scale
+
+    def test_halved_but_decodable_factor_is_not_certified_destroyed(self):
+        # The case that defeats a RELATIVE certificate: half the untrained displacement,
+        # yet a pure consistent ramp a linear probe recovers exactly. In whitened units
+        # it still moves half a standard deviation per step — nowhere near destroyed.
+        full = displacement_scale(self._field(1.0))
+        half = displacement_scale(self._field(0.5))
+        self.assertAlmostEqual(half["m_total"], 0.5, places=6)
+        self.assertAlmostEqual(half["m_shared"], 0.5, places=6)
+        self.assertGreater(half["m_total"], 0.1, "halved-but-decodable read as destroyed")
+        self.assertLess(half["m_total"], full["m_total"])   # reduced, reported as reduced
+
+    def test_collapsed_encoder_is_certified_destroyed(self):
+        # h independent of the factor -> the pair lands on the same point. With
+        # independent generative factors this is the airtight case.
+        st = displacement_scale(self._field(0.0))
+        self.assertLess(st["m_total"], 1e-9)
+        self.assertLess(st["m_shared"], 1e-9)
+
+    def test_context_dependent_movement_is_not_linearly_readable(self):
+        # Real movement (m_total ~ 1) whose direction flips per context, so the shared
+        # component vanishes: present, but a single fixed readout cannot see it. This is
+        # the regime that needs probe capacity, and rho_F alone cannot detect it.
+        d, n_ctx = 32, 200
+        u = np.zeros(d); u[0] = 1.0
+        sign = np.where(np.arange(n_ctx) % 2 == 0, 1.0, -1.0)[:, None, None]
+        field = sign * u[None, None, :] * np.ones((n_ctx, 4, 1))
+        st = displacement_scale(field)
+        self.assertAlmostEqual(st["m_total"], 1.0, places=6)
+        self.assertLess(st["m_shared"], 1e-9)
+        self.assertLess(shared_direction_fraction(field), 0.05)
+
+    def test_consistent_direction_field_is_fully_shared(self):
+        field = self._field(1.0)
+        self.assertAlmostEqual(displacement_scale(field)["m_shared"], 1.0, places=6)
+        self.assertGreater(shared_direction_fraction(field), 0.99)
 
 
 class TestEpsilonM(unittest.TestCase):

@@ -11,22 +11,33 @@ F alone can be measured directly:
 collected over sampled contexts into a displacement matrix M_F and whitened by the
 embedding covariance fit on probe-train. Three statistics, all probe-free:
 
-    m_F    = mean_z ||Delta_F(z)||        how far the encoder moves at all.
-             At the random-vs-random null the encoder maps the counterfactual pair
-             to the same point, so NO probe of any capacity can recover F — a
-             capacity-free certificate that the information is destroyed.
-    rho_F  = sigma_1^2 / sum_i sigma_i^2  fraction of displacement energy on one
-             direction. A linear probe reads a factor off one fixed direction, so
-             rho_F BOUNDS linear readout quality (necessary, not sufficient).
-    r_F    = (sum sigma_i^2)^2 / sum sigma_i^4    participation ratio: how many
-             directions the factor's effect occupies.
+    m_total  = E_z ||Delta_F(z)||    how far the encoder moves at all, in WHITENED
+               units — i.e. in standard deviations of the representation itself.
+               m_total << 1 means the counterfactual pair lands inside the
+               representation's own noise ball in every direction, so no probe of
+               any capacity can separate them; with INDEPENDENTLY sampled factors,
+               h is then a function of the context alone and carries nothing about
+               F. That is the destruction certificate.
+    m_shared = ||E_z Delta_F(z)||    the component a single fixed readout sees, so
+               this is what bounds LINEAR decodability.
+    rho_F    = sigma_1^2 / sum_i sigma_i^2   spectral concentration of the field.
+    r_F      = (sum sigma_i^2)^2 / sum sigma_i^4   participation ratio.
 
 Reading, with no probe involved:
 
-    m_F at the null                   -> destroyed; genuine invariance
-    m_F large, rho_F ~ 1              -> linearly accessible
-    m_F large, rho_F small, r_F large -> present but context-entangled; a readout
-                                         needs capacity
+    m_total << 1                          -> destroyed; genuine invariance
+    m_total large, m_shared ~ m_total     -> linearly accessible
+    m_total large, m_shared << m_total    -> present but context-entangled; a
+                                             readout needs capacity
+
+Amendment A12 (2026-08-13) corrected two errors in A11's definitions, before any
+displacement number existed. (i) A11 (b) keyed the certificate on the DEFICIT
+m_F(random) - m_F(trained), which is relative: an encoder moving half as far as an
+untrained one cleared it while the factor stayed a perfect linear ramp, so it
+certified reduction, not destruction. The scale is now absolute, supplied by the
+whitening. (ii) rho_F was described as bounding linear decodability; it does not.
+Two contexts moving +u and -u put all energy on one direction (rho_F = 1) while
+cancelling exactly, so no single readout sees them. m_shared is the bound.
 
 Correctness requirements, all enforced here:
 
@@ -37,10 +48,10 @@ Correctness requirements, all enforced here:
  2. sigma_i^2 is biased upward at small context counts. The spectrum basis is FIT on
     one context sample and the reported statistics are EVALUATED on a disjoint
     held-out sample, with a bootstrap over held-out contexts.
- 3. m_F carries its own null, ``epsilon_m``: the (1-alpha/2) quantile of the
-    random-vs-random-encoder null on the m_F deficit, the same estimator prereg
-    A8 (a) fixed for epsilon_G and A10 (c) for epsilon_D. A destruction certificate
-    without a null is not a certificate.
+ 3. ``epsilon_m`` (the random-vs-random null on the m_F deficit, the A8 (a)
+    estimator) is retained and reported, but as a REDUCTION test only: it answers
+    "does this encoder move less than an untrained one", not "is the factor gone".
+    The destruction reading keys on the absolute whitened m_total (A12).
  4. Whitening is fit on PROBE-TRAIN and applied by the identical procedure to every
     encoder role. Without it the statistic is only orthogonally invariant, not
     affinely, which is exactly the coordinate-stability property a probe hierarchy
@@ -247,6 +258,53 @@ def bootstrap_stats(fit: np.ndarray, evl_by_ctx: np.ndarray, n_boot: int = N_BOO
             for k, v in draws.items()}
 
 
+def displacement_scale(D: np.ndarray) -> dict:
+    """Whitened displacement magnitudes — the ABSOLUTE scale the certificate needs (A12).
+
+    A11 (b) keyed the certificate on the deficit m_F(random) - m_F(trained), which is
+    RELATIVE: an encoder moving half as far as an untrained one clears it while the
+    factor stays a perfect linear ramp, so it certified reduction, not destruction.
+    Whitening supplies the absolute scale for free — after it, the embedding has unit
+    variance in EVERY direction, so a displacement measured in whitened units is
+    measured in standard deviations of the representation itself:
+
+        m_total  = E_z ||Delta||       total movement, any probe
+        m_shared = ||E_z Delta||       the component a single fixed readout sees
+
+    ``m_total << 1`` means the counterfactual pair lands inside the representation's own
+    noise ball in every direction, so no probe of any capacity can separate them; because
+    the generative factors are sampled INDEPENDENTLY, h is then a function of the context
+    alone and carries no information about F. ``m_shared << m_total`` means the movement
+    is real but context-dependent, which is the regime that needs probe capacity.
+
+    A probe picks its own direction, so the noise that bounds it is the context spread
+    ALONG the displacement — not the total variance summed over every dimension. That is
+    why the scale is a whitened magnitude and not a variance share.
+    """
+    D = np.asarray(D, np.float64)
+    flat = D.reshape(-1, D.shape[-1])
+    per_step_shared = np.linalg.norm(D.mean(0), axis=1)     # [n_steps]
+    return {
+        "m_total": float(np.linalg.norm(flat, axis=1).mean()),
+        "m_shared": float(per_step_shared.mean()),
+    }
+
+
+def shared_direction_fraction(D: np.ndarray) -> float:
+    """||E_z Delta||^2 / E_z||Delta||^2 per step, averaged — bounds LINEAR readability (A12).
+
+    rho_F measures how concentrated the displacement SPECTRUM is, which is not the same
+    as how consistent the displacement DIRECTION is across contexts: two contexts moving
+    +u and -u put all their energy on one direction (rho_F = 1) while cancelling exactly,
+    so no single linear readout sees them. A linear probe applies one fixed w to every
+    context, so what bounds it is the SHARED component of the displacement field.
+    """
+    D = np.asarray(D, np.float64)
+    num = (D.mean(0) ** 2).sum(1)          # [n_steps]
+    den = (D ** 2).sum(2).mean(0)          # [n_steps]
+    return float(np.nanmean(np.where(den > 0, num / np.maximum(den, 1e-30), np.nan)))
+
+
 def monotonicity(Hsweep: np.ndarray, W: np.ndarray, Vt: np.ndarray) -> dict:
     """Requirement 1: is the projection onto sigma_1 monotone in the factor's values?
 
@@ -291,6 +349,24 @@ def epsilon_m(null_m, alpha: float = ALPHA) -> float:
     return float(np.percentile(pool, 100 * (1 - alpha / 2)))
 
 
+def build_external_encoder(name: str, device):
+    """An ImageNet-pretrained backbone as an extra encoder role (A13 external check).
+
+    The study's encoders are small and trained at 64x64, which is the standard "does
+    this survive at scale" objection. Running the SAME counterfactual pairs through a
+    public pretrained checkpoint keeps the exact-pair property the factorial grid
+    supplies while changing the encoder entirely, so the geometry claim is tested
+    outside this study's own training pipeline. Diagnostic: it enters no confirmatory
+    family (its augmentation recipe is not ours and is not controlled).
+    """
+    import torch.nn as nn
+    from torchvision import models
+    fn = getattr(models, name)
+    net = fn(weights="IMAGENET1K_V1")
+    net.fc = nn.Identity()
+    return net.eval().to(device)
+
+
 # --- driver ---------------------------------------------------------------------
 
 def analyze_role(Hsweeps: dict, W: np.ndarray, n_boot: int = N_BOOT, seed: int = 0) -> dict:
@@ -307,22 +383,40 @@ def analyze_role(Hsweeps: dict, W: np.ndarray, n_boot: int = N_BOOT, seed: int =
         Vt = st.pop("_Vt")
         st["ci"] = bootstrap_stats(fit, evl_ctx, n_boot=n_boot, seed=seed)
         st["monotonicity"] = monotonicity(Hs[half:], W, Vt)
+        st.update(displacement_scale(evl_ctx))                      # A12 certificate scale
+        st["shared_direction_fraction"] = shared_direction_fraction(evl_ctx)  # A12
         out[fname] = st
     return out
 
 
-def _extract(model, spec, rows, path, device, bs, nw, in_memory):
-    ds = spec.cls(np.asarray(rows), transform=eval_transform(), path=path,
+def _transform(grayscale: bool):
+    """Eval transform, optionally grayscaled.
+
+    A12 ground-truth control: converting to greyscale removes hue from the INPUT, so
+    every hue factor is provably absent by construction and m_total MUST collapse. It
+    is the only case where the right answer is known independently of the encoder, and
+    it validates the destruction certificate on real data rather than on a fixture.
+    """
+    base = eval_transform()
+    if not grayscale:
+        return base
+    from torchvision import transforms as T
+    return T.Compose([base, T.Grayscale(num_output_channels=3)])
+
+
+def _extract(model, spec, rows, path, device, bs, nw, in_memory, grayscale=False):
+    ds = spec.cls(np.asarray(rows), transform=_transform(grayscale), path=path,
                   return_label=True, in_memory=in_memory)
     H, _ = extract_features(model, ds, device, bs, nw)
     return np.asarray(H, np.float32)
 
 
-def _sweep_features(model, spec, rows_by_factor, path, device, bs, nw, in_memory):
+def _sweep_features(model, spec, rows_by_factor, path, device, bs, nw, in_memory,
+                    grayscale=False):
     """Extract embeddings for every swept row ONCE, then scatter back per factor."""
     flat = np.concatenate([r.ravel() for r in rows_by_factor.values()])
     uniq, inv = np.unique(flat, return_inverse=True)
-    H = _extract(model, spec, uniq, path, device, bs, nw, in_memory)
+    H = _extract(model, spec, uniq, path, device, bs, nw, in_memory, grayscale)
     out, off = {}, 0
     for fname, rows in rows_by_factor.items():
         n = rows.size
@@ -370,6 +464,9 @@ def run(args) -> dict:
     }
     if args.pixel_reference:
         roles["pixels"] = [("identity", nn.Flatten(start_dim=1).to(device))]
+    if args.external_encoder:
+        roles["external"] = [(n, build_external_encoder(n, device))
+                             for n in args.external_encoder]
     if args.trained_encoders:
         roles["trained"] = [(Path(p).parent.name, load_backbone_projector(p, device)[0])
                             for p in args.trained_encoders]
@@ -379,6 +476,7 @@ def run(args) -> dict:
         "dataset": spec.name,
         "cell": args.cell,
         "n_contexts": int(args.n_contexts),
+        "grayscale_control": bool(args.grayscale),
         "context_seed": int(args.context_seed),
         "alpha": ALPHA,
         "blind": {
@@ -398,11 +496,13 @@ def run(args) -> dict:
         out["roles"][role] = {}
         for tag, model in models:
             Htr = _extract(model, spec, base["probe_train"], path, device,
-                           args.batch_size, args.num_workers, args.in_memory)
+                           args.batch_size, args.num_workers, args.in_memory,
+                           args.grayscale)
             W = whitener(Htr)
             del Htr
             Hs = _sweep_features(model, spec, rows_by_factor, path, device,
-                                 args.batch_size, args.num_workers, args.in_memory)
+                                 args.batch_size, args.num_workers, args.in_memory,
+                                 args.grayscale)
             out["roles"][role][tag] = analyze_role(Hs, W, args.n_boot)
             del Hs
             for fname, st in out["roles"][role][tag].items():
@@ -443,6 +543,12 @@ def _main() -> None:
                     help="backbone.pt paths; BLIND-GATED, requires --amendment")
     ap.add_argument("--amendment", default=None,
                     help="dated prereg amendment preregistering the (1-rho_F) -> Delta_G link")
+    ap.add_argument("--grayscale", action="store_true",
+                    help="A12 ground-truth control: greyscale the input, so hue is "
+                         "provably absent and m_total MUST collapse on every hue factor")
+    ap.add_argument("--external-encoder", nargs="*", default=None,
+                    help="ImageNet-pretrained torchvision backbones as an extra role "
+                         "(e.g. resnet18 resnet50); diagnostic, no confirmatory family")
     ap.add_argument("--pixel-reference", action="store_true", default=True)
     ap.add_argument("--no-pixel-reference", dest="pixel_reference", action="store_false")
     ap.add_argument("--n-boot", type=int, default=N_BOOT)

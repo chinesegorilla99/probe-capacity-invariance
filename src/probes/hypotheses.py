@@ -486,6 +486,30 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
             "confirmed": bool(dg_lo[fi] > 0 and dg_lo[fi] > eps_dg[fi] and s_top_lo > 0),
             "confirmed_fixed_0.05": bool(dg_lo[fi] > 0 and dg_lo[fi] > EPS_FIXED and s_top_lo > 0),
         })
+    # Closure fraction kappa(F) = 1 - D(top)/D(linear) (A13). The deficit training
+    # caused, read across the ladder: kappa ~ 1 means a deficit present at the linear
+    # rung CLOSES with capacity (the information was made inaccessible, not removed);
+    # kappa ~ 0 means it does not close (the information is destroyed). This is the
+    # study's own absent-versus-inaccessible axis made quantitative, and it is what
+    # promotes the A5/A7 excluded arms from attrition to a measured dissociation.
+    # kappa is only meaningful where a deficit EXISTS at the linear rung to close, so
+    # it is defined exactly where the A10 (c) boolean reads "suppressed" there. Off a
+    # near-zero denominator the ratio is numerically explosive and substantively empty.
+    d_lin, d_top = D["mean"][:, 0], D["mean"][:, -1]
+    has_deficit = d_lin > eps_d_used[:, 0]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        kappa = np.where(has_deficit, 1.0 - d_top / d_lin, np.nan)
+    for row, fi in zip(h1_rows, range(len(cell.factors))):
+        row["deficit_linear"] = float(d_lin[fi])
+        row["deficit_top"] = float(d_top[fi])
+        row["closure_fraction_kappa"] = float(kappa[fi])
+        row["suppressed_at_linear"] = bool(has_deficit[fi])
+        row["closure_reading"] = (
+            "undefined (no deficit at the linear rung to close)" if not np.isfinite(kappa[fi])
+            else "closes with capacity (inaccessible, not absent)" if kappa[fi] >= 0.5
+            else "does not close (destroyed)" if kappa[fi] <= 0.0
+            else "partial closure")
+
     h1 = {
         "rule": "Delta_G(F) = G(top) - G(linear); bootstrap CI lower bound > 0 and > "
                 "epsilon(Delta_G random-vs-random null), with S CI > 0 at the top rung; "
