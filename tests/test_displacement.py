@@ -17,6 +17,9 @@ from src.probes.displacement import (
     run,
     analyze_role,
     bootstrap_stats,
+    calibrate_m_star,
+    certificate,
+    context_scale,
     epsilon_m,
     grid_codes,
     grid_index,
@@ -81,22 +84,42 @@ class TestGrid(unittest.TestCase):
 
 
 class TestWhitening(unittest.TestCase):
-    def test_whitening_makes_the_statistic_affine_invariant(self):
-        # Requirement 4: unwhitened, the spectrum is only ORTHOGONALLY invariant.
-        # Re-parameterize the embedding by an arbitrary invertible map; every
-        # reported statistic must be unchanged.
+    def test_whitening_is_exactly_invariant_under_an_orthogonal_reparameterization(self):
+        # An orthogonal map leaves the covariance spectrum alone, so the A15 (d) rank cap
+        # retains the same k and the whitened subspace is the rotated one. Exact.
         rng = np.random.default_rng(1)
         d = 6
-        Htr = rng.normal(size=(400, d))
-        Hs = rng.normal(size=(24, 5, d))
-        A = rng.normal(size=(d, d))
-        while abs(np.linalg.det(A)) < 1e-3:
-            A = rng.normal(size=(d, d))
-
+        Htr, Hs = rng.normal(size=(400, d)), rng.normal(size=(24, 5, d))
+        Q = np.linalg.qr(rng.normal(size=(d, d)))[0]
         base = analyze_role({"f": Hs}, whitener(Htr), n_boot=N_BOOT)["f"]
-        mapped = analyze_role({"f": Hs @ A.T}, whitener(Htr @ A.T), n_boot=N_BOOT)["f"]
-        for key in ("m", "rho", "r_eff"):
-            self.assertAlmostEqual(base[key], mapped[key], places=5, msg=key)
+        rot = analyze_role({"f": Hs @ Q.T}, whitener(Htr @ Q.T), n_boot=N_BOOT)["f"]
+        for key in ("m", "rho", "r_eff", "m_total", "m_shared", "m_ctx", "d_prime"):
+            self.assertAlmostEqual(base[key], rot[key], places=5, msg=key)
+
+    def test_rank_capped_whitening_trades_exact_affine_invariance_for_conditioning(self):
+        # A15 (d), disclosed rather than asserted away, and it lands on the CERTIFIED
+        # quantity: truncating at a variance fraction is not exactly affine invariant,
+        # because an invertible map moves which directions clear the cap. Measured at
+        # d = 64: 17% at 0.95, 13% at 0.99, 6.7% at 0.999, 0.3% at full rank. That is why
+        # the var_fraction sweep bounds every certificate verdict instead of garnishing it.
+        rng = np.random.default_rng(1)
+        d = 64
+        Htr, Hs = rng.normal(size=(400, d)), rng.normal(size=(24, 5, d))
+
+        def deviation(var_fraction):
+            devs = []
+            for _ in range(5):
+                A = rng.normal(size=(d, d))
+                base = analyze_role({"f": Hs}, whitener(Htr, var_fraction), n_boot=N_BOOT)["f"]
+                mapped = analyze_role({"f": Hs @ A.T}, whitener(Htr @ A.T, var_fraction),
+                                      n_boot=N_BOOT)["f"]
+                devs.append(abs(base["m_total"] - mapped["m_total"]) / base["m_total"])
+            return float(np.mean(devs))
+
+        capped, tighter, full = deviation(0.99), deviation(0.999), deviation(1.0)
+        self.assertGreater(capped, 0.05)        # the cost is real and must be reported
+        self.assertLess(tighter, capped)        # and it is monotone in the cap
+        self.assertLess(full, 0.01)             # localizing the cause in the truncation
 
     def test_underdetermined_whitening_is_refused(self):
         # With fewer probe-train samples than dimensions the covariance is singular and
@@ -106,14 +129,19 @@ class TestWhitening(unittest.TestCase):
         with self.assertRaises(ValueError):
             whitener(rng.normal(size=(20, 64)))
 
-    def test_null_direction_is_floored_not_amplified(self):
-        # A rank-deficient embedding must not blow the displacement norm up.
+    def test_null_direction_is_projected_out_not_amplified(self):
+        # A15 (d): a dead coordinate leaves the subspace instead of being floored and
+        # retained. Flooring at 1e-6 kept it and multiplied it by up to 1e3, and did so
+        # by an amount set by each role's own collapse -- across exactly the roles the
+        # certificate compares.
         rng = np.random.default_rng(2)
         H = rng.normal(size=(200, 4))
         H[:, 3] = 0.0                      # a dead coordinate
-        W = whitener(H)
+        W, info = whitener(H, return_info=True)
         self.assertTrue(np.isfinite(W).all())
-        self.assertLess(abs(W[3, 3]), 1e3)
+        self.assertLessEqual(info["rank"], 3)
+        self.assertEqual(W.shape, (info["rank"], 4))
+        self.assertLess(np.linalg.norm(W @ np.eye(4)[3]), 1e-8)   # dead axis contributes nothing
 
 
 class TestSpectrum(unittest.TestCase):
@@ -235,6 +263,91 @@ class TestDestructionScale(unittest.TestCase):
         field = self._field(1.0)
         self.assertAlmostEqual(displacement_scale(field)["m_shared"], 1.0, places=6)
         self.assertGreater(shared_direction_fraction(field), 0.99)
+
+
+class TestCertificate(unittest.TestCase):
+    """A15 (b): the eta / eta_star certificate that replaces 'm_total << 1'."""
+
+    @staticmethod
+    def _fixture(amplitude, d=64, n_ctx=128, n_vals=6, seed=4):
+        """A12 (a)'s family h = z + a*v*u: known Bayes R2 = a^2/(a^2+1)."""
+        rng = np.random.default_rng(seed)
+        u = np.zeros(d); u[0] = 1.0
+        vals = np.arange(n_vals, dtype=float)
+        vals = (vals - vals.mean()) / vals.std()
+        return rng.normal(size=(n_ctx, 1, d)) + amplitude * vals[None, :, None] * u
+
+    def test_m_total_is_a_width_free_discriminability_index(self):
+        # Why the certificate keys on m_total and NOT on a ratio to a context reference:
+        # whitening fixes per-direction variance at 1 and a matched readout over an
+        # r-dimensional displacement gains exactly sqrt(r), so the same decodability gives
+        # the same m_total at any embedding width. Dividing by m_ctx ~ sqrt(2k) would put
+        # a rank dependence back in, which is what makes the calibration transferable.
+        m_by_d, ratio_by_d = [], []
+        for d in (32, 128, 512):
+            H = self._fixture(1.0, d=d, seed=5)
+            sc = displacement_scale(np.diff(H, axis=1))
+            m_by_d.append(sc["m_total"])
+            ratio_by_d.append(sc["m_total"] / context_scale(H, np.eye(d)))
+        self.assertLess(max(m_by_d) / min(m_by_d), 1.05)              # width-free
+        self.assertGreater(max(ratio_by_d) / min(ratio_by_d), 3.0)    # the ratio is not
+
+    def test_a_decodable_ramp_is_not_certified_destroyed_and_a_collapsed_one_is(self):
+        cal = calibrate_m_star(dims=64, n_ctx=128, seed=6)
+        self.assertTrue(cal["separable"], "fixture classes overlap: no m_star")
+        m_star = cal["m_star"]
+        for amp, expected in ((10.0, "moves"), (3.0, "moves"),
+                              (0.0, "eps_destroyed"), (1e-3, "eps_destroyed")):
+            H = self._fixture(amp)
+            sc = displacement_scale(np.diff(H, axis=1))
+            v = certificate(sc["m_total"], sc["m_shared"],
+                            context_scale(H, np.eye(H.shape[-1])), H.shape[-1], m_star)
+            self.assertEqual(v["verdict"], expected, f"amplitude {amp}")
+
+    def test_the_unadjudicated_band_is_reported_not_silently_split(self):
+        # Between "known decodable" and "known absent" the fixture says nothing, and the
+        # calibration must expose that band as the resolution the certificate declines to
+        # adjudicate, rather than letting the midpoint pretend to decide it.
+        cal = calibrate_m_star(dims=64, n_ctx=128, seed=6)
+        lo, hi = cal["unadjudicated_band"]
+        self.assertLess(lo, cal["m_star"])
+        self.assertGreater(hi, cal["m_star"])
+        self.assertGreater(hi / max(lo, 1e-12), 2.0)
+
+    def test_no_verdict_without_a_calibration(self):
+        # The A15 (b) discipline: an unset threshold must never silently become a chosen
+        # one. Absent m_star the artifact records 'uncalibrated', not 'eps_destroyed'.
+        v = certificate(0.0, 0.0, 10.0, rank=8, m_star=None)
+        self.assertEqual(v["verdict"], "uncalibrated")
+        self.assertIsNone(v["m_star"])
+
+    def test_calibration_reports_overlap_instead_of_picking_a_number(self):
+        # If the known-decodable and known-absent classes overlap there is no separating
+        # threshold, and the honest output is None rather than a chosen constant.
+        cal = calibrate_m_star(dims=64, n_ctx=128, amplitudes=(0.5,), seed=7)
+        self.assertIsNone(cal["m_star"])
+        self.assertFalse(cal["separable"])
+
+    def test_whitening_check_flags_a_subspace_that_is_not_unit_variance(self):
+        # m_total reads as a discriminability index only if whitening actually delivered
+        # unit variance per direction. m_ctx must land near sqrt(2k); a shortfall means it
+        # did not, and the reading fails with it.
+        rng = np.random.default_rng(9)
+        k = 16
+        H = rng.normal(size=(64, 5, k))
+        good = certificate(1.0, 1.0, context_scale(H, np.eye(k)), rank=k)
+        self.assertAlmostEqual(good["whitening_check"], 1.0, delta=0.15)
+        bad = certificate(1.0, 1.0, context_scale(0.1 * H, np.eye(k)), rank=k)
+        self.assertLess(bad["whitening_check"], 0.2)
+
+    def test_context_reference_uses_a_derangement_and_holds_the_factor_fixed(self):
+        # m_ctx must pair DIFFERENT contexts at the SAME factor value. Self-pairing would
+        # return 0 and make every eta infinite.
+        rng = np.random.default_rng(8)
+        H = rng.normal(size=(64, 5, 16))
+        m_ctx = context_scale(H, np.eye(16))
+        self.assertGreater(m_ctx, 1.0)
+        self.assertAlmostEqual(m_ctx, np.sqrt(2 * 16), delta=1.5)   # ~sqrt(2k) when decorrelated
 
 
 class TestEpsilonM(unittest.TestCase):
