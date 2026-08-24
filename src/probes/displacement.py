@@ -363,7 +363,7 @@ def context_scale(Hsweep: np.ndarray, W: np.ndarray,
 
 
 def certificate(m_total: float, m_shared: float, m_ctx: float, rank: int,
-                m_star: float | None = None) -> dict:
+                m_star: float | None = None, band: list | None = None) -> dict:
     """The eps-DESTRUCTION reading of the whitened magnitude (A15 b).
 
     A12 (a) was right that ``m_total`` is the scale, and A15 (b) supplies the constant it
@@ -390,8 +390,14 @@ def certificate(m_total: float, m_shared: float, m_ctx: float, rank: int,
         "whitening_check": float(m_ctx / expected) if ok else float("nan"),
         "m_ctx_expected": expected,
         "m_star": m_star,
+        "unadjudicated_band": list(band) if band else None,
     }
+    # A15 (b)(3): between the calibration's two known-decodability classes the
+    # threshold is silent BY CONSTRUCTION. A factor landing there is reported as
+    # unadjudicated, never as either verdict, so the band cannot be split silently.
+    in_band = bool(band) and np.isfinite(m_total) and band[0] <= m_total <= band[1]
     out["verdict"] = ("uncalibrated" if m_star is None or not np.isfinite(m_total)
+                      else "unadjudicated" if in_band
                       else "eps_destroyed" if m_total < m_star else "moves")
     return out
 
@@ -521,7 +527,7 @@ def build_external_encoder(name: str, device):
 # --- driver ---------------------------------------------------------------------
 
 def analyze_role(Hsweeps: dict, W: np.ndarray, n_boot: int = N_BOOT, seed: int = 0,
-                 m_star: float | None = None) -> dict:
+                 m_star: float | None = None, band: list | None = None) -> dict:
     """Per-factor spectrum for one encoder, from its per-factor sweep embeddings."""
     out = {}
     for fname, Hs in Hsweeps.items():
@@ -538,7 +544,8 @@ def analyze_role(Hsweeps: dict, W: np.ndarray, n_boot: int = N_BOOT, seed: int =
         st.update(displacement_scale(evl_ctx))                      # A12 magnitudes
         st["shared_direction_fraction"] = shared_direction_fraction(evl_ctx)  # A12
         st["m_ctx"] = context_scale(Hs[half:], W)                   # A15 (b) instrument check
-        st.update(certificate(st["m_total"], st["m_shared"], st["m_ctx"], W.shape[0], m_star))
+        st.update(certificate(st["m_total"], st["m_shared"], st["m_ctx"], W.shape[0],
+                              m_star, band))
         out[fname] = st
     return out
 
@@ -596,17 +603,19 @@ def _sweep_features(model, spec, rows_by_factor, path, device, bs, nw, in_memory
     return out
 
 
-def _load_m_star(path) -> float | None:
-    """Read the calibrated m_star, or None if it was never calibrated (A15 b).
+def _load_m_star(path) -> tuple[float | None, list | None]:
+    """Read the calibrated m_star and its unadjudicated band, or (None, None).
 
     None is not an error here: the random and pixel roles are worth measuring before a
     threshold exists. It propagates to verdict "uncalibrated", so an artifact can never
-    carry a destruction verdict that no calibration backs.
+    carry a destruction verdict that no calibration backs. The band travels WITH the
+    constant because A15 (b)(3) requires it be quoted wherever a verdict is quoted.
     """
     if not path or not Path(path).exists():
-        return None
+        return None, None
     cal = json.loads(Path(path).read_text())
-    return cal.get("m_star")
+    band = cal.get("unadjudicated_band")
+    return cal.get("m_star"), (list(band) if band else None)
 
 
 def run(args) -> dict:
@@ -622,7 +631,7 @@ def run(args) -> dict:
 
     control = "value" if getattr(args, "value_channel", False) else (
         "grayscale" if getattr(args, "grayscale", False) else None)
-    m_star = _load_m_star(getattr(args, "threshold_file", None))
+    m_star, m_band = _load_m_star(getattr(args, "threshold_file", None))
 
     cfg = load_config(args.config)
     spec = get_dataset(args.dataset)
@@ -669,6 +678,7 @@ def run(args) -> dict:
                                   "the input, measurably but not to zero. Neither is a "
                                   "ground truth and neither sets a threshold.",
         "m_star": m_star,
+        "unadjudicated_band": m_band,
         "m_star_source": getattr(args, "threshold_file", None) if m_star is not None
                            else "uncalibrated: run --calibrate-threshold first",
         "var_fraction": float(args.var_fraction),
@@ -697,7 +707,7 @@ def run(args) -> dict:
             Hs = _sweep_features(model, spec, rows_by_factor, path, device,
                                  args.batch_size, args.num_workers, args.in_memory,
                                  control)
-            scored = analyze_role(Hs, W, args.n_boot, m_star=m_star)
+            scored = analyze_role(Hs, W, args.n_boot, m_star=m_star, band=m_band)
             del Hs
             out["roles"][role][tag] = {"whitening": winfo, "factors": scored}
             for fname, st in scored.items():

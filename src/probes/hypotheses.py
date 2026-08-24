@@ -137,6 +137,20 @@ PRE_VERDICT_EXCLUSIONS = {
 DIAGNOSTIC_ONLY_READOUTS = frozenset({("dsprites", "orientation")})
 
 
+def _floor_below_zero_names(cell) -> set[str]:
+    """A14 (d)(4): a continuous readout whose random-encoder floor is below 0 at ANY
+    reported rung is excluded from confirmatory families on A3's vacuity logic.
+
+    A baseline worse than the probe-test mean is not a usable reference for G or D at
+    any capacity, so the readout cannot support a confirmatory claim. A14 (d) added the
+    lower bound after observing that A10 (b)'s gate tested only the ceiling and would
+    pass a floor of -0.89.
+    """
+    floors = cell.random_stats.mean(axis=0)          # [F, R], mean over random seeds
+    return {f.name for fi, f in enumerate(cell.factors)
+            if f.kind == "continuous" and bool((floors[fi] < 0).any())}
+
+
 def _diagnostic_only_names(cell) -> set[str]:
     return {f.name for f in cell.factors
             if (cell.dataset, f.name) in DIAGNOSTIC_ONLY_READOUTS}
@@ -381,6 +395,7 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
     names = [f.name for f in cell.factors]
     n = cell.trained.shape[0]
     diag_names = _diagnostic_only_names(cell)                    # Q16 / Amendment A3
+    diag_names |= _floor_below_zero_names(cell)                  # Amendment A14 (d)(4)
     conf = np.array([nm not in diag_names for nm in names], bool)  # confirmatory-factor mask
 
     # Per-seed paired quantities. All CIs below resample the same n-seed axis
@@ -479,6 +494,9 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
             "factor": fac.name,
             "delta_g": float(dg_mean[fi]),
             "delta_g_ci": [float(dg_lo[fi]), float(dg_hi[fi])],
+            # A13 (a) computes the link statistic WITHIN each seed, so the per-seed
+            # Delta_G is that test's dependent variable and has to leave this module.
+            "delta_g_per_seed": [float(v) for v in dg[:, fi]],
             "epsilon_delta_g": float(eps_dg[fi]),
             "s_top_ci_lo": s_top_lo,
             "p_wilcoxon_greater": _wilcoxon_p(dg[:, fi], "greater"),
