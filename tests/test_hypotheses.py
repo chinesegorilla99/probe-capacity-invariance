@@ -23,6 +23,7 @@ import numpy as np
 
 from src.probes.hypotheses import (
     EXPECTED_CELLS,
+    _a8e_upper_bias,
     _wilcoxon_p,
     analyze_cell,
     assemble,
@@ -587,6 +588,73 @@ class TestTwoSidedInvariance(unittest.TestCase):
         # the superseded estimator on the SAME draws collapses toward zero
         self.assertLess(ci_mean[48], 0.4 * ci_mean[12])
         self.assertLess(ci_mean[48], quant[48] / 10)
+
+    def test_floor_below_zero_excludes_continuous_readout(self):
+        # A14 (d)(4): a continuous readout whose random-encoder floor is below 0 at ANY
+        # rung is vacuous as a reference for G or D and leaves the confirmatory
+        # families, on A3's logic. The A10 (b) gate tested only the ceiling and would
+        # have passed a floor of -0.89. Categorical readouts are untouched by the rule.
+        tmp = tempfile.mkdtemp()
+        try:
+            rng = np.random.default_rng(19)
+            trained, random, perm, projector = make_stacks(rng)
+            random[:, 3, 2] = -0.35          # scale (continuous): one rung below zero
+            random[:, 4, 2] = -0.35          # shape (categorical): must stay eligible
+            d = write_raw(tmp, condition="color", strength="strong",
+                          trained=trained, random=random, perm=perm, projector=projector,
+                          trained_seeds=list(range(10)), random_seeds=list(range(10)))
+            rep = analyze_cell(load_cell(d), n_boot=N_BOOT)
+            diag = rep["report"]["diagnostic_only_factors"]
+            self.assertIn("scale", diag)
+            self.assertNotIn("shape", diag)
+            self.assertNotIn("floor_hue", diag)
+            # excluded from the confirmatory mask, still reported per readout
+            self.assertIn("scale", [r["factor"] for r in rep["h1"]["per_factor"]])
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_a8e_upper_bias_travels_with_every_delta_g(self):
+        # A14 (g): "Every reported Delta_G carries that upper bias stated numerically."
+        # Present when the calibration artifact resolves the cell's pin to exactly one
+        # random-role row; loudly unavailable, never silently absent, when it does not.
+        tmp = tempfile.mkdtemp()
+        try:
+            rng = np.random.default_rng(23)
+            trained, random, perm, projector = make_stacks(rng)
+            d = write_raw(tmp, condition="color", strength="strong",
+                          trained=trained, random=random, perm=perm, projector=projector,
+                          trained_seeds=list(range(10)), random_seeds=list(range(10)))
+            meta = json.loads((d / "meta.json").read_text())
+            meta.update(probe_regime="interpolation", probe_train_size=2000,
+                        probe_steps=1000)
+            (d / "meta.json").write_text(json.dumps(meta))
+
+            calib = Path(tmp) / "calib"
+            calib.mkdir()
+            (calib / "calibration_shapes3d.json").write_text(json.dumps({"results": [
+                {"regime": "interpolation", "probe_train_size": 2000, "probe_steps": 1000,
+                 "encoder_role": "random", "n_seeds": 3, "linear_rung_gap": 0.0099,
+                 "linear_rung_ladder_adam": 0.7827, "linear_rung_closed_form": 0.7926},
+                {"regime": "interpolation", "probe_train_size": 40000, "probe_steps": 1000,
+                 "encoder_role": "random", "n_seeds": 3, "linear_rung_gap": 0.5,
+                 "linear_rung_ladder_adam": 0.5, "linear_rung_closed_form": 1.0},
+            ]}))
+            cell = load_cell(d)
+            bias = _a8e_upper_bias(cell, calib_root=calib)
+            self.assertTrue(bias["available"])
+            self.assertAlmostEqual(bias["delta_g_upper_bias"], 0.0099)   # not the 40000 row
+
+            # absent artifact -> unavailable, and the report says so rather than omitting
+            missing = _a8e_upper_bias(cell, calib_root=Path(tmp) / "nope")
+            self.assertFalse(missing["available"])
+            self.assertIn("UNQUANTIFIED", missing["note"])
+
+            rep = analyze_cell(cell, n_boot=N_BOOT)
+            for row in rep["h1"]["per_factor"]:
+                self.assertIn("delta_g_upper_bias_a8e", row)
+            self.assertIn("a8e_upper_bias", rep["h1"])
+        finally:
+            shutil.rmtree(tmp)
 
     def test_epsilon_d_matches_epsilon_g_by_pool_symmetry(self):
         # The random-vs-random null pool carries both signs, so the deficit and gain

@@ -151,6 +151,43 @@ def _floor_below_zero_names(cell) -> set[str]:
             if f.kind == "continuous" and bool((floors[fi] < 0).any())}
 
 
+CALIBRATION_ROOT = Path("results/calibration")
+
+
+def _a8e_upper_bias(cell, calib_root: Path = CALIBRATION_ROOT) -> dict:
+    """A14 (g): the residual A8 (e) linear-rung gap at the pin, quoted numerically.
+
+    The Adam linear rung underfits the convex solver by ``linear_rung_gap``. The gap
+    is positive at the pin on both datasets, which inflates Delta_G in the
+    H1-confirming direction, so A14 (g) requires it to travel with every reported
+    Delta_G rather than sit in a calibration file. The pin is read from the cell's
+    own meta, never assumed.
+    """
+    meta = json.loads((cell.path / "meta.json").read_text())
+    pin = (meta.get("probe_regime"), meta.get("probe_train_size"), meta.get("probe_steps"))
+    path = Path(calib_root) / f"calibration_{cell.dataset}.json"
+    if not path.exists():
+        return {"available": False, "pin": list(pin), "source": str(path),
+                "note": "A14 (g) bias UNQUANTIFIED: calibration artifact absent"}
+    rows = [r for r in json.loads(path.read_text()).get("results", [])
+            if (r.get("regime"), r.get("probe_train_size"), r.get("probe_steps")) == pin
+            and r.get("encoder_role") == "random"]
+    if len(rows) != 1:
+        return {"available": False, "pin": list(pin), "source": str(path),
+                "note": f"A14 (g) bias UNQUANTIFIED: {len(rows)} calibration rows match "
+                        f"pin {pin} at encoder_role 'random', expected exactly 1"}
+    r = rows[0]
+    return {"available": True, "pin": list(pin), "source": str(path),
+            "delta_g_upper_bias": float(r["linear_rung_gap"]),
+            "linear_rung_ladder_adam": float(r["linear_rung_ladder_adam"]),
+            "linear_rung_closed_form": float(r["linear_rung_closed_form"]),
+            "n_seeds": r.get("n_seeds"),
+            "note": "A14 (g): upper bias on Delta_G in the H1-confirming direction. The "
+                    "Adam linear rung underfits the convex solver by this much at the "
+                    "pin; the 4000-step rows close it to ~0.001, so it is an "
+                    "optimizer-budget artifact, bounded, and stated with every Delta_G"}
+
+
 def _diagnostic_only_names(cell) -> set[str]:
     return {f.name for f in cell.factors
             if (cell.dataset, f.name) in DIAGNOSTIC_ONLY_READOUTS}
@@ -528,10 +565,17 @@ def analyze_cell(cell: Cell, n_boot: int = N_BOOT) -> dict:
             else "does not close (destroyed)" if kappa[fi] <= 0.0
             else "partial closure")
 
+    # A14 (g): every reported Delta_G carries the A8 (e) upper bias numerically.
+    a8e = _a8e_upper_bias(cell)
+    for row in h1_rows:
+        row["delta_g_upper_bias_a8e"] = (a8e["delta_g_upper_bias"] if a8e["available"]
+                                         else None)
+
     h1 = {
         "rule": "Delta_G(F) = G(top) - G(linear); bootstrap CI lower bound > 0 and > "
                 "epsilon(Delta_G random-vs-random null), with S CI > 0 at the top rung; "
                 ">=1 factor confirms (prereg §6 H1)",
+        "a8e_upper_bias": a8e,
         "per_factor": h1_rows,
         "confirmed_factors": [r["factor"] for r in h1_rows if r["confirmed"]],
         "confirmed_factors_fixed_0.05": [r["factor"] for r in h1_rows if r["confirmed_fixed_0.05"]],
@@ -820,6 +864,14 @@ def assemble(results: list[dict], alpha: float = ALPHA) -> dict:
         if r["epsilon_underpowered"]:
             notes.append(f"{r['cell']}: primary-epsilon verdicts are diagnostic-only "
                          f"(<{MIN_SEEDS} random seeds, D020)")
+        a8e = r["h1"]["a8e_upper_bias"]
+        if a8e["available"]:
+            notes.append(f"{r['cell']}: Delta_G carries an A8 (e) upper bias of "
+                         f"+{a8e['delta_g_upper_bias']:.4f} in the H1-confirming "
+                         "direction (A14 g); quote it wherever Delta_G is quoted")
+        else:
+            notes.append(f"{r['cell']}: A14 (g) REQUIRES a numeric Delta_G upper bias "
+                         f"and it is unavailable — {a8e['note']}")
         diag = r["epsilon_diagnostics"]
         if diag.get("watch_item_triggered"):
             cells = [(d["factor"], d["rung"]) for d in diag["verdict_disagreements"]]
@@ -851,6 +903,8 @@ def assemble(results: list[dict], alpha: float = ALPHA) -> dict:
         "confirmed_fixed_0.05": [[r["cell"], f] for r in results
                                  for f in r["h1"]["confirmed_factors_fixed_0.05"]],
         "per_factor": h1_rows,
+        # A14 (g): the A8 (e) upper bias per cell, so no Delta_G is quoted without it.
+        "a8e_upper_bias_by_cell": {r["cell"]: r["h1"]["a8e_upper_bias"] for r in results},
         "status": "confirmed" if h1_conf else "refuted",
     }
 
