@@ -1,0 +1,20 @@
+# Color arm (Shapes3D), WEAK strength — the dose-response partner to color_strong.
+# Identical to color_strong in every field except `strength`, so the pair isolates
+# augmentation strength and nothing else. Train the same 12 seeds.
+_base_: ../base.yaml
+
+data:
+  dataset: shapes3d
+  subset: 150000
+
+augmentation:
+  condition: color
+  strength: weak
+
+run:
+  device: cuda
+  amp: true
+  batch_size: 512
+  epochs: 50
+  warmup_epochs: 5
+  seed: 0
