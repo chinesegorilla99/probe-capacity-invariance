@@ -31,7 +31,7 @@ LOG_DIR = Path("results/encoders/_launch_logs")
 def run_dir(cfg: dict, seed: int) -> Path:
     """Where train_simclr will write this seed (mirrors its run_id_from_cfg)."""
     aug = cfg["augmentation"]
-    return (Path(cfg["output"]["dir"]).parent
+    return (Path(cfg["output"]["dir"])
             / f"{aug['condition']}_{aug['strength']}_seed{seed}")
 
 

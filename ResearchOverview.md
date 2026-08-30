@@ -19,6 +19,11 @@ Title candidates (keep for the end; pick the final one *from your results*):
 
 ## 1. One-sentence thesis
 
+> **SUPERSEDED 2026-08-25 (D033).** The thesis below is the Phase-0 framing and is retained as a
+> record of it. The current thesis, claim ladder and title candidates are in
+> `lab-notebook/positioning-2026-08-25.md` §1. In particular the flip-count headline is dead and
+> the working title must not ship. §§2-3 below still describe the design correctly.
+
 When self-supervised contrastive models are described as "invariant" to some factor (color, position, rotation), that invariance is almost always *measured* with a linear probe — so a linear probe's failure to recover the factor may reflect the probe's weakness rather than the representation's content; this project tests, under fully controlled conditions, whether the invariance survives stronger probes or dissolves into a measurement artifact.
 
 ---

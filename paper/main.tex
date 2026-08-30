@@ -22,9 +22,17 @@
 \newcommand{\G}{G}          % encoder gain
 \newcommand{\epsG}{\varepsilon_G}
 
-\title{When ``Invariant'' Means ``Linearly Inaccessible'': \\
-A Controlled Study of Probe Capacity in Contrastive Learning}
-% Working title -- pick the final title from results (ResearchOverview.md \S0).
+% TITLE RETIRED 2026-08-25 (D033). "When ``Invariant'' Means ``Linearly Inaccessible''"
+% promises the verdict-stability flip count, which A14(h) fixed as structurally unfirable
+% before unblinding and which came back at 1 with CI95 [0,1]. Do not ship it.
+% Candidates, from what was actually measured (positioning-2026-08-25.md \S1):
+%   - Two Regimes of Linear Inaccessibility in Contrastive Representations
+%   - Do Augmentations Move the Factors They Name? A Factorial-Grid Audit of SSL Invariance
+%   - What a Linear Probe Cannot Tell Apart: Capacity Closure in Self-Supervised Invariance
+% Pick after notebook 08.
+\title{Do Augmentations Move the Factors They Name? \\
+A Factorial-Grid Audit of Self-Supervised Invariance}
+% PROVISIONAL -- see the note above.
 
 \author{Author Name \\ Affiliation \\ \texttt{email@example.com}}
 \date{\today}
@@ -43,24 +51,40 @@ Placeholder abstract.
 % ============================================================
 \section{Introduction}
 \label{sec:intro}
-% One-sentence thesis (ResearchOverview.md \S1):
-% Contrastive "invariance" is almost always measured with a linear
-% probe; a linear probe's failure to recover a factor may reflect
-% probe weakness, not representation content. This paper tests,
-% under controlled conditions, whether invariance survives stronger
-% probes or dissolves into a measurement artifact.
+% THESIS REWRITTEN 2026-08-25. Source of truth:
+% lab-notebook/positioning-2026-08-25.md \S1. ResearchOverview.md \S1 is superseded.
 %
-% - Motivate: augmentation-choice folklore in SSL treats linear-probe
-%   "invariance" as ground truth (\S3 why-it-matters).
-% - State the confound plainly.
-% - Preview contributions:
-%   1. probe-capacity ladder + random-encoder control applied to the
-%      invariance claim (methodology borrowed from Hewitt \& Liang,
-%      application is the contribution -- \S4 novelty).
-%   2. per-factor G-map (encoder gain vs. capacity) on Shapes3D/dSprites.
-%   3. headline verdict-stability flip count between linear and top-rung probes.
-% - State the two-way payoff: either outcome (artifact map or
-%   genuine-invariance validation) is a contribution (\S10).
+% Thesis: SSL invariance is measured by asking whether a probe can recover a
+% generative factor, then reported as a property of the representation. Two
+% assumptions sit underneath and neither is routinely checked: that the
+% augmentation manipulates the factor it is named for, and that a
+% fixed-capacity probe's failure means the factor is not there. On a complete
+% factorial grid of independently sampled factors both are directly testable.
+% Both fail in ways that change the verdict.
+%
+% CLAIM LADDER (positioning \S2) -- present in this order:
+%   1. LEAD. Augmentation-to-factor correspondence audit. The only axis that
+%      came back unhit. A5 SO(2) vs SO(3); A7 whole-scene affine zoom vs
+%      object-only scale; A7(c) hue shortcut (the hue triple identifies an
+%      image 1 in 1000). Cite von Kugelgen \S6 as the direct warrant.
+%   2. RESULT. The closure-fraction dissociation. Among readouts a linear probe
+%      reports identically, capacity separates closure from widening. Colour arm
+%      and control arm have NON-OVERLAPPING kappa intervals of opposite sign on
+%      the same three hue factors.
+%   3. CONFIRMATION, PENDING. The probe-free displacement certificate
+%      (notebook 08). Do NOT promise it in the introduction until it has run.
+%   4. PRECONDITION, NOT A CONTRIBUTION. The random-encoder headroom ceiling.
+%      Concede to Cao et al. NeurIPS 2022, Schott et al. ICLR 2022, Maziarka
+%      Table 5(e), Saxe et al. ICML 2011 BEFORE using it. No abstract sentence
+%      may rest on it (positioning \S3).
+%
+% NARRATIVE INVERSION -- state it plainly, it is the more interesting claim:
+% H1 is confirmed mostly on the CONTROL arm. "More capacity recovers what a
+% linear probe missed" is true of the un-augmented baseline and false of the
+% augmented one.
+%
+% BANNED FROM THIS SECTION: "first", "novel", the flip count as a headline, and
+% any reading of kappa < 0 as "destroyed" before notebook 08 has run.
 
 \section{Related Work}
 \label{sec:related}
@@ -76,9 +100,33 @@ Placeholder abstract.
 % von K\"ugelgen et al.; Tian et al.; HaoChen et al.; Balestriero \& LeCun.
 \subsection{Encoder vs.\ projector}
 % Cosentino et al. 2022 -- basis of H4; Chaudhry 2026 (writing-phase add).
+\subsection{Probe-free and interventional invariance measurement}
+% NON-NEGOTIABLE CITATIONS, verified first-hand (concession-list.md \S2.3, \S3):
+% Ericsson, Gouk \& Hospedales BMVC 2022 (2111.11398) -- already measure
+%   invariance as a whitened Mahalanobis displacement on a frozen backbone over
+%   18 transforms. That is our m_total. Concede up front, in these terms: they
+%   measure displacement on AUGMENTED pairs; the complete factorial grid lets the
+%   same quantity be computed on exact GENERATIVE COUNTERFACTUALS, which is what
+%   makes a null, a calibration and a decomposition available at all.
+% Wang \& Isola ICML 2020 -- alignment is the unwhitened m_total.
+% Suter et al. IRS ICML 2019; Goodfellow et al. NIPS 2009.
+% SEIS (2602.04054) -- OWNS the loss-versus-re-encoding framing sentence, and
+%   reports a random-network baseline. Concede early and explicitly.
+% EditCLEVR (2607.22705) -- closest paper to the whole design.
+% Draft paragraph ready to drop in: positioning-2026-08-25.md \S6.3.
+
 \subsection{Positioning}
-% State the specific open seam per Phase 0 novelty verdict
-% (lab-notebook/phase0/novelty-verdict.md, local only).
+% Source of truth: lab-notebook/concession-list.md (dated, first-hand verified).
+% It supersedes newplan.md \S3.1 and literature-gaps-2026-08-20.md.
+% Delete every "first" and "novel". TMLR does not score novelty but does reject
+% for claiming it falsely. State the surviving deltas TOGETHER, since none works
+% alone: independently sampled factors (kills the latent-dependency account
+% available to von Kugelgen), the random-encoder control Rashtchian \S B.1 names
+% as their missing control, exact generative counterfactuals over a complete
+% grid, and a calibrated absolute threshold with a declared unadjudicated band.
+% Say "approximately coordinate-stable", never "stable under affine
+% reparameterization": A15 measured 17.2\% mean relative deviation in m_total at
+% var_fraction 0.95.
 
 % ============================================================
 \section{Problem Setup and Definitions}
