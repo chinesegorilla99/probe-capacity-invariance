@@ -79,7 +79,10 @@ def main() -> None:
     cwd = Path.cwd()
     cfg = apply_overrides(load_config(args.config), args.set)
     gpus = args.gpus if args.gpus is not None else visible_gpus()
-    slots = max(1, len(gpus) * args.per_gpu) if gpus else 1
+    # One entry per concurrent slot, so a finished run frees its own GPU rather
+    # than the queue guessing from the running count and double-booking one.
+    free = [g for g in gpus for _ in range(args.per_gpu)] or [None]
+    slots = len(free)
 
     pending = [s for s in args.seeds if not (run_dir(cfg, s) / "backbone.pt").exists()]
     done = [s for s in args.seeds if s not in pending]
@@ -98,7 +101,7 @@ def main() -> None:
     while queue or running:
         while queue and len(running) < slots:
             seed = queue.pop(0)
-            gpu = gpus[len(running) % len(gpus)] if gpus else None
+            gpu = free.pop(0)
             proc, log = _spawn(args.config, seed, gpu, args.set, cwd)
             running[seed] = (proc, log, gpu, time.time())
             print(f"[launch] seed {seed:2d} -> gpu {gpu} (pid {proc.pid})", flush=True)
@@ -118,6 +121,7 @@ def main() -> None:
                 print(f"[launch] seed {seed:2d} FAILED rc={proc.returncode} "
                       f"after {mins:.1f} min\n{tail}", flush=True)
             del running[seed]
+            free.append(gpu)
 
     print(f"[launch] wall clock {(time.time() - t0) / 60:.1f} min")
     if failed:
