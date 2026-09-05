@@ -18,3 +18,4 @@ run:
   epochs: 50
   warmup_epochs: 5
   seed: 0
+  

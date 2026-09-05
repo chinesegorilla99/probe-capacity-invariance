@@ -1,9 +1,13 @@
 % ============================================================
 % Probe Capacity & Contrastive Invariance -- paper skeleton
 % Compile with pdfLaTeX (or upload as-is to Overleaf)
-% STATUS: outline only -- Phase 1 (encoder pipeline) not yet complete.
-% Results-dependent sections are placeholders; fill in once the
-% sweep (Sec 7 of ResearchOverview.md) finishes.
+% STATUS 2026-09-05: the confirmatory layer is CLOSED and unblinded. All three
+% realized cells are probed (results/probes_pinned/), notebook 08 ran 2026-08-29
+% (results/displacement/), and the hypothesis and kappa outputs exist. What is
+% missing is prose, not data.
+% Target venue TMLR. Its acceptance criterion is whether every claim is exactly
+% as strong as the evidence, and reducing a claim is officially sanctioned.
+% ONE OPEN DRAFTING DECISION: which claim leads. See \section{Introduction}.
 % ============================================================
 
 \documentclass[11pt]{article}
@@ -71,8 +75,14 @@ Placeholder abstract.
 %      reports identically, capacity separates closure from widening. Colour arm
 %      and control arm have NON-OVERLAPPING kappa intervals of opposite sign on
 %      the same three hue factors.
-%   3. CONFIRMATION, PENDING. The probe-free displacement certificate
-%      (notebook 08). Do NOT promise it in the introduction until it has run.
+%   3. CONFIRMATION. The probe-free displacement certificate. RAN 2026-08-29.
+%      Colour-arm hues eps-destroyed at m_star = 0.2888 while the SAME hues in
+%      control_strong read `moves` at d' 17.6-23.6: the destruction is
+%      augmentation-specific, not a property of hue. position_strong shows NO
+%      destruction (pos_x 2.41, pos_y 2.39). Scope every sentence to the colour
+%      arm. The A15(d) var_fraction sweep degrades the verdict to
+%      `unadjudicated` at vf=0.999, so the honest phrasing is "destroyed at
+%      vf <= 0.99, unadjudicated at vf = 0.999", never an unqualified verdict.
 %   4. PRECONDITION, NOT A CONTRIBUTION. The random-encoder headroom ceiling.
 %      Concede to Cao et al. NeurIPS 2022, Schott et al. ICLR 2022, Maziarka
 %      Table 5(e), Saxe et al. ICML 2011 BEFORE using it. No abstract sentence
@@ -84,7 +94,20 @@ Placeholder abstract.
 % augmented one.
 %
 % BANNED FROM THIS SECTION: "first", "novel", the flip count as a headline, and
-% any reading of kappa < 0 as "destroyed" before notebook 08 has run.
+% any reading of kappa < 0 as "destroyed" that is not carried by the notebook-08
+% certificate. kappa < 0 licenses "the deficit widens with capacity", i.e.
+% suppression relative to the untrained floor. Destruction is claim 3, it holds
+% for the COLOUR arm only, and it is qualified by the var_fraction sweep.
+%
+% LEAD-CLAIM DECISION (open, 2026-09-05). Claim 1 leads only if its L3/L4 legs
+% are adjudicated by the A7(c) recipe control (notebook 04). If that pilot comes
+% back indeterminate, Claim 1 drops to a Methods/Discussion argument standing on
+% its two ANALYTIC legs (L1 SO(2) != SO(3); L2 whole-scene zoom != object-only
+% scale, neither of which is exposed to the pilot), and the LEAD MOVES TO CLAIM 2
+% with Claim 3 as its confirmation. Do not draft the abstract or the opening
+% paragraphs until this is settled; the two versions differ in title, abstract
+% and section order. Title candidate "Do Augmentations Move the Factors They
+% Name?" dies in that branch; the other two survive.
 
 \section{Related Work}
 \label{sec:related}
@@ -113,7 +136,39 @@ Placeholder abstract.
 % SEIS (2602.04054) -- OWNS the loss-versus-re-encoding framing sentence, and
 %   reports a random-network baseline. Concede early and explicitly.
 % EditCLEVR (2607.22705) -- closest paper to the whole design.
-% Draft paragraph ready to drop in: positioning-2026-08-25.md \S6.3.
+% PROSE BELOW is the verified draft from positioning-2026-08-25.md \S6.3 (213
+% words, contains no "first", no "novel", no "to the best of our knowledge"),
+% with one added opening sentence conceding Ericsson et al. per the note above.
+% Re-verify both preprints first-hand before submission; both were read in full
+% on 2026-08-25 and both are preprints with no venue.
+
+Displacement-based invariance measurement on a frozen backbone is
+established: \citet{ericsson2022why} compute a whitened Mahalanobis
+displacement over eighteen transforms, which is the same quantity we
+denote $m_{\mathrm{total}}$, and the alignment term of
+\citet{wang2020understanding} is its unwhitened form. Two recent preprints measure
+invariance without probes and are the closest prior work. SEIS
+\citep{lin2026seis} separates invariance from equivariance by applying
+CCA to SVD-denoised activation subspaces, reports that a random baseline
+yields near-zero scores, and states the motivating gap as the failure of
+existing metrics ``to distinguish between information loss and
+re-encoding''. That distinction is theirs and we adopt it rather than
+claim it. SEIS measures alignment between subspaces under post-hoc image
+transformations, defines no absolute threshold, and runs no probes.
+EditCLEVR \citep{karnam2026editclevr} builds paired CLEVR scenes in which
+one attribute of one object changes with the layout held fixed, and
+reports probe-free localization and drift norms alongside probe-decoded
+semantic metrics. Its scene set is not fully factorial, it uses one
+context per edit, and it reports no untrained-encoder baseline and no
+calibrated threshold; its own limitations name calibration baselines and
+factor-structured readouts as next steps. Our design differs on those
+points: a complete factorial grid of independently sampled factors
+supplies an expectation over contexts for a fixed factor change,
+whitening makes the statistic approximately coordinate-stable, and a
+random-encoder null supplies a calibrated absolute threshold with a
+declared band in which the certificate does not decide.
+% Every key cited above resolves in references.bib (ericsson2022why,
+% wang2020understanding, lin2026seis, karnam2026editclevr).
 
 \subsection{Positioning}
 % Source of truth: lab-notebook/concession-list.md (dated, first-hand verified).
@@ -173,16 +228,38 @@ Placeholder abstract.
 % results separately (Cosentino-style axis, H4).
 
 \subsection{Augmentation conditions}
-% Realized grid (prereg Amendment A1): the STRONG cross-section only —
-% Color / Position / Orientation / Scale / Control-aug at strong strength,
-% >=12 seeds per cell; the weak axis is deferred to a follow-up study.
+% Realized grid, as of A7(d), is THREE cells: Color (Shapes3D), Position
+% (dSprites), Control-aug (Shapes3D), strong strength, 12 seeds each.
+% A1 curtailed the design to the STRONG cross-section (weak deferred).
+% A5 excluded Orientation on CONSTRUCT-VALIDITY grounds (the factor is 3D camera
+%   azimuth, the augmentation is 2D in-plane rotation; distinct group actions).
+% A7 excluded Scale (bounded retrain scored 0/12 on the shape gate,
+%   FAIL-DESTROYED under A8(b)).
+% Both exclusions were decided PRE-VERDICT; A7(d) then froze the grid so no
+% further cell may be excluded for any reason. Present the exclusions as
+% methodological findings with their dates, never as arms that were dropped
+% after seeing an outcome.
+% Two EXPLORATORY arms sit outside this grid. Cite each to its own ground, they
+% are not the same (decision log D035):
+%   scale_recipe (notebook 04/05) -- A7(c): "a declared-exploratory recipe
+%     control ... it enters no confirmatory family, and its result is reported
+%     either way". The itemised "excluded from every Holm family and from the
+%     flip count" wording is A7(b) and governs a different hypothetical arm.
+%   color_weak (notebook 09) -- A1(a): the weak strength axis is deferred, and
+%     "all Holm families span the realized cells only". NOT A7(d), which bars
+%     REMOVAL from the grid and is silent on admission.
+% Label both wherever they appear.
 % Arm -> perturbed-factor map (prereg A4d): each augmentation perturbs a
 % SET of factors; every "the augmentation targeting factor F" claim is read
 % against this table.
 \begin{table}[H]
 \centering
 \caption{Augmentation conditions: targeted factors and the full set of
-factors each transform perturbs (prereg A4d).}
+factors each transform perturbs (prereg A4d). Orientation and Scale are
+DESIGNED cells excluded pre-verdict by A5 and A7 respectively; the realized
+grid is Color, Position and Control-aug. Mark the excluded rows in the
+final table rather than deleting them, so the designed family stays visible
+alongside the realized one (A6 maximal-Holm-family disclosure).}
 \label{tab:conditions}
 \begin{tabular}{llll}
 \toprule
@@ -216,8 +293,13 @@ Control-aug & minimal (crop-only)       & --- (baseline)        & position, scal
 % gate (downstream linear-probe accuracy) before any invariance claim.
 
 \subsection{Experimental design}
-% Realized factorial sweep (A1): factors (5-6) x conditions (4+control) x
-% strong strength x probe capacities (4) x seeds (12). Seed controls both
+% Realized factorial sweep: factors (5-6) x THREE cells (Color, Position,
+% Control-aug) x strong strength x probe capacities (4) x seeds (12).
+% Probe sweeps are pinned at the A14(g) configuration: regime=interpolation,
+% probe_train=2000, probe_steps=1000, 12 seeds (results/probes_pinned/).
+% results/probes/ holds the SUPERSEDED pre-A10 stacks; A10(a) voids every
+% continuous entry in them and they must never feed the statistics layer.
+% Seed controls both
 % encoder and probe init. Probe-build pins (prereg A4c): per-dimension
 % standardization on probe-train stats; identical training protocol at every
 % rung (Adam lr 1e-3, batch 4096, 100 epochs, weight-decay grid tuned on
@@ -262,15 +344,48 @@ Control-aug & minimal (crop-only)       & --- (baseline)        & position, scal
 % ============================================================
 \section{Results}
 \label{sec:results}
-% PLACEHOLDER -- do not draft until the core sweep (ResearchOverview.md
-% \S15, Months 3-4) completes and the encoder-quality gate passes.
+% The sweep is COMPLETE and unblinded (2026-08-24) and notebook 08 has run
+% (2026-08-29). Every number below is regenerable: kappa and selectivity from
+% `python -m src.eval.kappa_ci` over results/probes_pinned/*/stacks.npz,
+% displacement from results/displacement/*.json.
+% ORDER THESE SUBSECTIONS TO MATCH THE CLAIM LADDER, not the prereg's order.
 
 \subsection{Encoder-quality gate}
+% Three-valued since A8(b). PASS needs linear-rung shape recoverability >= 0.90.
+% control_strong scoring 0/12 is EXPECTED and exempt under A2: a
+% minimal-augmentation encoder is supposed to sit at the random floor (~0.829).
 \subsection{Per-factor recoverability-vs-capacity curves}
 % Co-plot absolute levels: R(trained), R(random floor), R(projector) (A1c)
 % and the raw-pixel reference ladder (A4b) so floor height is always visible.
 \subsection{Encoder gain G and the capacity gap $\Delta_G$}
+% NARRATIVE INVERSION, state it plainly: H1 is confirmed mostly on the CONTROL
+% arm (5 of 6 readouts, Delta_G +0.115 to +0.224) while the treatment arm returns
+% NEGATIVE Delta_G on every hue readout. "More capacity recovers what a linear
+% probe missed" is true of the un-augmented baseline and false of the augmented
+% one. This is the more interesting claim and it is the one the data supports.
+\subsection{The closure-fraction dissociation}
+% THE EMPIRICAL SPINE (claim 2). kappa(F) = 1 - D(top)/D(linear),
+% D = R(random encoder) - R(trained); seed bootstrap, 12 seeds, 4000 draws,
+% paired resampling, ratio of resampled means.
+% kappa is UNDEFINED where D(linear) <= 0 (6 of 17 readouts): a negative
+% denominator inverts the reading. List those readouts, never drop them silently.
+% Colour arm hues: -0.020 [-0.075, +0.041] / -0.064 [-0.096, -0.031] /
+%   -0.244 [-0.266, -0.225].
+% Control arm, SAME three hues: +0.784 / +0.900 / +0.742, all intervals tight.
+% The intervals are NON-OVERLAPPING with opposite signs. Same factors, dataset,
+% ladder, probe-train size and seeds; the only difference is colour jitter.
+\subsection{The counterfactual displacement certificate}
+% CLAIM 3, ran 2026-08-29. m_star = 0.2888, unadjudicated band
+% [0.0799, 1.0445]. color_strong: floor/wall/object hue at 0.0597 / 0.0766 /
+% 0.0617, all below the band, all reduced=True. control_strong: the same three
+% hues `moves` at d' 17.6 / 23.6 / 21.1, reduced=False -- the dissociation the
+% certificate exists to show. position_strong: pos_x 2.41, pos_y 2.39, `moves`,
+% NO destruction. Every non-targeted factor in every cell `moves` (d' 4-24).
+% Report wall_hue's per-seed split (eps_destroyed/unadjudicated) explicitly.
 \subsection{Verdict-stability flip count}
+% DEMOTED. A14(h) fixed it as structurally unfirable BEFORE unblinding and it
+% came back at 1 with CI95 [0, 1]. Report it for completeness in one sentence.
+% It is not a headline, not a title, and no claim rests on it.
 % Quote primary AND saturation-excluded counts together (A4a), each with the
 % A1c seed-bootstrap interval, for both eps_G variants; list null-saturated
 % readouts explicitly.
@@ -317,6 +432,42 @@ Control-aug & minimal (crop-only)       & --- (baseline)        & position, scal
 % (A1) => H4 descriptive; small-scale SimCLR (batch size bounds the NT-Xent
 % negative pool) => report batch/tau/epochs per cell; Wilcoxon power at
 % n=12 after Holm (pre-registered caveat + D025 calibration).
+%
+% FOUR LIMITATIONS THAT MUST BE WRITTEN, NOT FIXED. A15 was the last instrument
+% amendment before notebook 08 (D033), so each of these is disclosed as a
+% limitation and none is repaired after the fact.
+%
+% (1) var_fraction sensitivity of the certificate. The A15(d) sweep degrades the
+%     colour-hue verdicts from eps_destroyed at vf <= 0.99 to unadjudicated 12/12
+%     at vf = 0.999; it never flips to `moves`. Cause: calibrate_m_star builds a
+%     rank-1, fully-shared fixture, so m_shared == m_total in every calibration
+%     row, while real displacements are r_eff 40-47 at shared_fraction 0.10-0.25,
+%     and the unshared part grows with retained rank. The A15 docstring's claim
+%     that m_total is width-free is contradicted by this sweep. Ship m_total as
+%     primary. The m_shared re-scoring (destroyed 12/12 at vf 0.95 and 0.99,
+%     11-12/12 at 0.999) is reported as an explicitly labelled POST-HOC
+%     robustness analysis, never as the certificate's scale.
+% (2) The A13(a) link test is NOT EVALUABLE. After saturation and diagnostic-only
+%     exclusions only `shape` survives per cell, so all three groups are n=1 and
+%     Spearman needs n >= 3. Pre-committed in A11(d) as a power limitation of the
+%     realized grid: report as neither refutation nor support. Do NOT rescue it by
+%     pooling across cells or across metric types.
+% (3) The monotonicity diagnostic carries no weight in this run.
+%     monotonicity.monotone_fraction is ~0.00 for nearly every factor INCLUDING
+%     ones verdicted `moves`; whitening_check is healthy (0.91-1.00). Report as a
+%     limitation, not as a verdict input.
+% (4) Say "approximately coordinate-stable", never "stable under affine
+%     reparameterization": A15 measured 17.2% mean relative deviation in m_total
+%     at var_fraction 0.95.
+%
+% ERRATUM to carry (D033, not filed as an amendment): A14(i) attributes the floor
+% saturation to the split design; A14(e), in the SAME amendment, measured that and
+% found the opposite (0 of 16 compositional configurations cleared the gate, on
+% both datasets, at probe-train 2000 and 40000). Report A14(e)'s attribution --
+% the floor is a property of the factor and the untrained architecture -- and note
+% in an appendix that A14(i)'s stated root cause is superseded within A14. The
+% "composition-split remedy" is deleted wherever it appears; it was measured and it
+% does not work.
 
 \section{Conclusion}
 \label{sec:conclusion}

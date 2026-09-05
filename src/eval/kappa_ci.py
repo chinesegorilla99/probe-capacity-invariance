@@ -11,7 +11,19 @@ import numpy as np
 B, RNG = 4000, np.random.default_rng(20260824)
 OUT = {}
 
-for cell in ["color_strong", "control_strong", "position_strong"]:
+ROOT = pathlib.Path("results/probes_pinned")
+CONFIRMATORY = ["color_strong", "control_strong", "position_strong"]
+# color_weak (notebook 09) is exploratory and not preregistered. Ground is A1(a),
+# which defers the weak strength axis and commits that "all Holm families span the
+# realized cells only" -- not A7(d), which bars removal from the grid and says
+# nothing about admission (see decision log D035). Scored only when present, and
+# labelled in both the printout and the JSON so the status cannot be lost.
+EXPLORATORY = ["color_weak"]
+
+cells = CONFIRMATORY + [c for c in EXPLORATORY if (ROOT / c / "stacks.npz").exists()]
+
+for cell in cells:
+    exploratory = cell in EXPLORATORY
     meta = json.load(open(f"results/probes_pinned/{cell}/meta.json"))
     facs = [f["name"] for f in meta["factors"]]
     z = np.load(f"results/probes_pinned/{cell}/stacks.npz")
@@ -36,7 +48,7 @@ for cell in ["color_strong", "control_strong", "position_strong"]:
         s_lo, s_hi = np.percentile(sb, [2.5, 97.5])
         if not defined:
             k_hat, k_lo, k_hi = float("nan"), float("nan"), float("nan")
-        rows.append(dict(factor=f, kappa_defined=bool(defined),
+        rows.append(dict(factor=f, exploratory=exploratory, kappa_defined=bool(defined),
                          D_linear=float(dl.mean()), D_top=float(dt.mean()),
                          kappa=float(k_hat), kappa_ci95=[float(k_lo), float(k_hi)],
                          S_top=float(s_top.mean()), S_top_ci95=[float(s_lo), float(s_hi)],
@@ -47,7 +59,8 @@ for cell in ["color_strong", "control_strong", "position_strong"]:
                          R_perm_lin=float(pm[:, i, 0].mean()),
                          R_perm_top=float(pm[:, i, -1].mean())))
     OUT[cell] = rows
-    print(f"== {cell} (n={n} seeds, B={B}) ==")
+    tag = "  [EXPLORATORY -- not preregistered, no Holm family]" if exploratory else ""
+    print(f"== {cell} (n={n} seeds, B={B}) =={tag}")
     for r in rows:
         k = (f"kappa={r['kappa']:+.4f} [{r['kappa_ci95'][0]:+.4f}, {r['kappa_ci95'][1]:+.4f}]"
              if r['kappa_defined'] else "kappa=UNDEFINED (D_linear <= 0)          ")
